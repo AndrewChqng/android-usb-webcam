@@ -1,245 +1,30 @@
-<div id="top"></div>
+# Android USB Webcam Client (UVC Gadget)
 
-<!-- PROJECT SHIELDS -->
-[![Contributors][contributors-shield]][contributors-url]
-[![Forks][forks-shield]][forks-url]
-[![Stargazers][stars-shield]][stars-url]
-[![Issues][issues-shield]][issues-url]
-[![GPL-3.0 License][license-shield]][license-url]
-<br />
-[![IzzyOnDroid Repo Version][izzyondroid-shield]][izzyondroid-url]
+A root-enabled Android application that exposes your phone's physical cameras (Camera2 API) as a hardware-level **USB Video Class (UVC)** webcam (`/dev/videoX`) over ConfigFS (`CONFIG_USB_CONFIGFS_F_UVC=y`), requiring zero host drivers on Linux, Windows, or macOS.
 
-<!-- PROJECT LOGO -->
-<br />
-<div align="center">
-  <a href="https://github.com/Arian04/android-hid-client">
-    <img src="images/app-icon-round.png" alt="App Icon" width="80" height="80">
-  </a>
+Built on the ConfigFS and `libsu` `RootService` foundation of [`Arian04/android-hid-client`](https://github.com/Arian04/android-hid-client).
 
-<h3 align="center">USB HID Client</h3>
-  <p align="center">
-    Android app that allows you to easily use your phone as a keyboard and mouse
-    <br />
-    <br />
-    <a href="https://github.com/Arian04/android-hid-client/issues">Report Bug</a>
-    ·
-    <a href="https://github.com/Arian04/android-hid-client/issues">Request Feature</a>
-  </p>
-</div>
+## Key Features
 
+- **Hardware UVC 1.1 Gadget (`functions/uvc.0`)**:
+  - **MJPEG (`streaming/mjpeg/m`)**: `1920x1080`, `1280x720`, and `640x360` at `60 / 30 / 15 fps`.
+  - **Uncompressed YUYV (`streaming/uncompressed/u`)**: `640x360`, `640x480`, and `1280x720` fallback.
+- **Composite USB & DWC3 Endpoint Safe**:
+  - Automatically unlinks bandwidth/endpoint-heavy vendor functions (`ffs.mtp`, `ss_acm.0`, `ss_mon.mtp`) while active so Qualcomm DWC3 TX FIFOs do not overflow, keeping `uvc.0` + `ffs.adb` active (or pure UVC-only mode via Settings), and restores original USB functions on Stop.
+- **Native C++ V4L2 Event & Streaming Engine (`uvc_gadget.cpp`)**:
+  - Handles `UVC_EVENT_CONNECT`, `UVC_EVENT_DISCONNECT`, `UVC_EVENT_SETUP`, `UVC_EVENT_DATA` (`VS_PROBE_CONTROL` / `VS_COMMIT_CONTROL` via `UVCIOC_SEND_RESPONSE`), `UVC_EVENT_STREAMON`, and `UVC_EVENT_STREAMOFF`.
+  - Zero-GC frame pipeline using `V4L2_MEMORY_MMAP` buffers, native `-O3` YUV420 planar-to-NV21/YUYV conversion with crop/scale/rotation/mirroring, and NEON-accelerated JPEG compression into direct `ByteBuffer`s.
+- **Power-Efficient Foreground Service**:
+  - Continues streaming with the display turned off via a Camera Foreground Service and partial wake lock.
+  - Local viewfinder preview is disabled by default (zero GPU/SurfaceFlinger overhead) and can be toggled on at any time for framing.
 
+## Prerequisites
 
-<!-- TABLE OF CONTENTS -->
-<details>
-  <summary>Table of Contents</summary>
-  <ol>
-    <li>
-      <a href="#about-the-project">About The Project</a>
-    </li>
-    <li>
-      <a href="#getting-started">Getting Started</a>
-      <ul>
-        <li><a href="#prerequisites">Prerequisites</a></li>
-      </ul>
-    </li>
-    <li><a href="#usage">Usage</a></li>
-    <li><a href="#roadmap">Roadmap</a></li>
-    <li><a href="#contributing">Contributing</a></li>
-    <li><a href="#license">License</a></li>
-    <li><a href="#acknowledgments">Acknowledgments</a></li>
-  </ol>
-</details>
+- Rooted Android device (Magisk, KernelSU, or APatch).
+- Kernel compiled with `CONFIG_USB_CONFIGFS=y` and `CONFIG_USB_CONFIGFS_F_UVC=y`.
 
+## Credits & Disclaimer
 
-
-<!-- ABOUT THE PROJECT -->
-
-## About The Project
-
-[<img src="images/app-screenshot1.png"
-alt="Main screen"
-height="350">](images/app-screenshot1.png)
-[<img src="images/app-screenshot2.png"
-alt="Main screen with menu open"
-height="350">](images/app-screenshot2.png)
-[<img src="images/app-screenshot3.png"
-alt="App settings screen"
-height="350">](images/app-screenshot3.png)
-[<img src="images/app-screenshot4.png"
-alt="Help screen with frequently asked questions"
-height="350">](images/app-screenshot4.png)
-
-This Android app allows you your phone to present itself to a connected device as a keyboard and mouse.
-Since this happens at a very low level, the connected device sees it exactly as a normal keyboard and mouse, meaning
-you don't need to install any software on the connected computer! For this reason, it will even work if the
-connected device is in its BIOS/UEFI. Even multimedia keys are supported, meaning you can send volume up/down
-keys to the connected computer to control media.
-
-**Disclaimers**:
-
-- This app requires your device to be rooted.
-- I strongly recommend using a keyboard such as [Unexpected Keyboard](https://github.com/Julow/Unexpected-Keyboard) to
-  use special keys such as modifier and function keys, but most functionality will work with any standard Android
-  keyboard.
-
-Bonus description for nerds: This app adds (and provides a simple UI for you to communicate with) two character
-devices (`/dev/hidg0` and `/dev/hidg1` respectively) by
-adding HID functions to the default Android USB gadget. If you wanted to, you could just use this app to create the
-character devices, then
-communicate solely through some C program, shell script, or whatever else you wanted as long as it had the right
-permissions to access the
-character devices and knew how to send proper reports to them. Beware of SELinux policies if you do that though. If
-anyone is actually doing that, let
-me know, I'd be glad to help if necessary.
-
-Tested primarily on: Linux (Host computer) and Pixel 5 running Android 14.
-
-<p align="right">(<a href="#top">back to top</a>)</p>
-
-
-
-<!-- GETTING STARTED -->
-
-## Getting Started
-
-### Prerequisites
-
-* Rooted device running Android
-    - Only specific root methods are supported, because I need to patch SELinux policy at runtime and am using provided
-      tools to do so.
-      if your root method isn't on this list and provides a method for live-patching SELinux policy, feel free to create
-      an issue.
-        - Magisk: `magiskpolicy`
-        - KernelSU: `ksud sepolicy patch`
-    - Android version that I currently test with: 14
-* Soft Keyboard
-    - I test the app with Gboard and Unexpected Keyboard, but Unexpected Keyboard is the one with slightly better
-      support, more keys,
-      and [fewer issues](https://github.com/Arian04/android-hid-client/issues?q=label%3A"soft+keyboard+issue").
-
-### Installation (Binary)<a name="installation-binary"> </a>
-
-The recommended way to install the app is through the [IzzyOnDroid repo][izzyondroid-url] via an app
-that's compatible with F-Droid style repositories, since that'll make updates much easier. However, you can also
-download
-the APK file from the [Github releases page](https://github.com/Arian04/android-hid-client/releases), then install it
-on your Android device.
-
-### Installation (Source)<a name="installation-source"></a>
-
-Clone the repository.
-
-   ```sh
-   git clone https://github.com/Arian04/android-hid-client.git
-   ```
-
-import into [Android Studio](https://developer.android.com/studio), build the APK, then install it
-on your Android device.
-
-<p align="right">(<a href="#top">back to top</a>)</p>
-
-<!-- USAGE EXAMPLES -->
-
-## Usage
-
-To relay keys in real-time as soon as you press them, click on the keyboard icon in the menu bar. It should pull up your
-keyboard. Now you can just start typing!
-
-Typing in the "Manual Input" text box will send all the characters that you've typed into the box to
-the connected device once you hit the "send" button.
-
-### Some Use Cases
-
-* Quickly be able to change BIOS/UEFI settings of a computer when you don't have a keyboard with you
-* Typing a long string (such as a password or IP address) into a console
-
-<p align="right">(<a href="#top">back to top</a>)</p>
-
-
-
-<!-- ROADMAP -->
-
-## Roadmap
-
-- [X] Keyboard support
-- [ ] Add some special key buttons to the UI (like multimedia keys)
-- [X] Touchpad support
-- [X] Ability to send string all at once
-- [X] Add full settings page
-- [X] Add prompt to create /dev/hidgX if not present
-
-See the [open issues][issues-url] for a full list of proposed features (and known issues).
-
-<p align="right">(<a href="#top">back to top</a>)</p>
-
-
-
-<!-- CONTRIBUTING -->
-
-## Contributing
-
-Contributions are what make the open source community such an amazing place to learn, inspire, and create. Any
-contributions you make are **greatly appreciated**.
-
-If you have a suggestion that would make this better, please fork the repo and create a pull request. You can also
-simply open an issue with the tag "enhancement".
-Don't forget to give the project a star! Thanks again!
-
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-<p align="right">(<a href="#top">back to top</a>)</p>
-
-
-
-<!-- LICENSE -->
-
-## License
-
-Distributed under the GNU GPLv3 License. See `LICENSE.txt` for more information.
-
-<p align="right">(<a href="#top">back to top</a>)</p>
-
-
-
-<!-- ACKNOWLEDGMENTS -->
-
-## Acknowledgments
-
-* [IzzyOnDroid](https://floss.social/@IzzyOnDroid) for adding this app
-  to [his F-Droid repository](https://android.izzysoft.de/repo)
-* [Best-README-Template](https://github.com/othneildrew/Best-README-Template)
-
-<p align="right">(<a href="#top">back to top</a>)</p>
-
-
-
-<!-- MARKDOWN LINKS & IMAGES -->
-<!-- https://www.markdownguide.org/basic-syntax/#reference-style-links -->
-
-[contributors-shield]: https://img.shields.io/github/contributors/Arian04/android-hid-client.svg?style=for-the-badge
-
-[contributors-url]: https://github.com/Arian04/android-hid-client/graphs/contributors
-
-[forks-shield]: https://img.shields.io/github/forks/Arian04/android-hid-client.svg?style=for-the-badge
-
-[forks-url]: https://github.com/Arian04/android-hid-client/network/members
-
-[stars-shield]: https://img.shields.io/github/stars/Arian04/android-hid-client.svg?style=for-the-badge
-
-[stars-url]: https://github.com/Arian04/android-hid-client/stargazers
-
-[issues-shield]: https://img.shields.io/github/issues/Arian04/android-hid-client.svg?style=for-the-badge
-
-[issues-url]: https://github.com/Arian04/android-hid-client/issues
-
-[license-shield]: https://img.shields.io/github/license/Arian04/android-hid-client.svg?style=for-the-badge
-
-[license-url]: https://github.com/Arian04/android-hid-client/blob/master/LICENSE.txt
-
-[izzyondroid-shield]: https://img.shields.io/endpoint?url=https://apt.izzysoft.de/fdroid/api/v1/shield/me.arianb.usb_hid_client&style=for-the-badge
-
-[izzyondroid-url]: https://apt.izzysoft.de/packages/me.arianb.usb_hid_client
+- Base architecture & UI framework: [Arian04/android-hid-client](https://github.com/Arian04/android-hid-client) (GPL-3.0).
+- Repurposed from USB HID to USB Video Class (UVC) webcam with assistance from **Antigravity (Google DeepMind)** by replacing the UHID/hidg report layer with a ConfigFS `f_uvc` descriptor manager, automatic `/sys/class/video4linux` gadget node discovery, SELinux `ioctl`/`map` policy injection, a native C++/JNI V4L2 UVC control/streaming state machine, and a Camera2 foreground streaming pipeline.
+- *Disclaimer: This project includes experimental AI-assisted code that directly manipulates Linux kernel ConfigFS USB gadgets and SELinux policies as root. Use at your own risk.*

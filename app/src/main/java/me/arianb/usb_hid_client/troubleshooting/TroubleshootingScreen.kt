@@ -173,7 +173,7 @@ private fun DebuggingInfoList() {
             summary = buildString {
                 appendLine("Version: ${it.version}")
                 appendLine("ConfigFS support: ${it.hasConfigFsSupport ?: "Unknown"}")
-                append("ConfigFS HID support: ${it.hasConfigFsHidFunctionSupport ?: "Unknown"}")
+                append("ConfigFS UVC support: ${it.hasConfigFsHidFunctionSupport ?: "Unknown"}")
             },
             extraInfo = it.kernelConfigAnnotated,
             isGood = if (it.hasConfigFsSupport == null || it.hasConfigFsHidFunctionSupport == null) {

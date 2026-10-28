@@ -169,7 +169,7 @@ private fun getCharacterDeviceInfo(gadgetPath: DevicePath): CharacterDeviceInfo 
 private fun getKernelInfo(): KernelInfo {
     // constants
     val configFsKernelOption = "CONFIG_USB_CONFIGFS"
-    val configFsHidKernelOption = "${configFsKernelOption}_F_HID"
+    val configFsHidKernelOption = "${configFsKernelOption}_F_UVC"
 
     val kernelVersion = System.getProperty("os.version")
     val kernelConfig = getKernelConfig()

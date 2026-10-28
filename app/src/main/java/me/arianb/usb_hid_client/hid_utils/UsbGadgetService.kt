@@ -18,30 +18,29 @@ import timber.log.Timber
 import java.io.IOException
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
-import kotlin.io.path.ExperimentalPathApi
 import kotlin.io.path.Path
 import kotlin.io.path.createDirectories
 import kotlin.io.path.createSymbolicLinkPointingTo
 import kotlin.io.path.deleteIfExists
-import kotlin.io.path.deleteRecursively
 import kotlin.io.path.div
+import kotlin.io.path.exists
 import kotlin.io.path.isDirectory
 import kotlin.io.path.isRegularFile
 import kotlin.io.path.isSymbolicLink
 import kotlin.io.path.listDirectoryEntries
 import kotlin.io.path.name
-import kotlin.io.path.writeBytes
+import kotlin.io.path.readLines
+import kotlin.io.path.readText
+import kotlin.io.path.writeLines
 import kotlin.io.path.writeText
 import kotlin.io.path.writer
 
 class UsbGadgetService : RootService() {
     init {
-        // This is called in a different process, so we gotta replant Timber stuff
         if (BuildConfig.DEBUG) {
             Timber.plant(Timber.DebugTree())
             Shell.enableVerboseLogging = true
         }
-//        Timber.plant(ProductionTree())
     }
 
     private val mMessenger: Messenger by lazy {
@@ -52,7 +51,7 @@ class UsbGadgetService : RootService() {
 
     internal class MessageHandler : Handler.Callback {
         override fun handleMessage(msg: Message): Boolean {
-            Timber.d("Message received in service, running with UID = ${Process.myUid()}")
+            Timber.d("Message received in UsbGadgetService, running with UID = ${Process.myUid()}")
 
             val gadgetUserPreferences: GadgetUserPreferences? = run {
                 val bundle = msg.data.apply {
@@ -76,10 +75,7 @@ class UsbGadgetService : RootService() {
                     }
                 }
             } catch (e: Exception) {
-                // Catching unhandled exceptions because the logs were complaining about unclosed file descriptors
-                // when I didn't
-                Timber.w("Oh no, an unhandled exception occurred in UsbGadgetService")
-                Timber.w(e)
+                Timber.w(e, "Unhandled exception occurred in UsbGadgetService")
             }
 
             return true
@@ -104,47 +100,86 @@ class UsbGadgetService : RootService() {
     }
 }
 
-// FIXME: implement CreateNewGadgetForFunctions preference
-@OptIn(ExperimentalUnsignedTypes::class)
 internal class UsbGadgetManager(val gadgetUserPreferences: GadgetUserPreferences) {
     private val CONFIG_FS_PATH: Path = Path("/config/usb_gadget")
     private val USB_GADGET_PATH: Path = determineGadgetPath()
     private val UDC_PATH: Path = USB_GADGET_PATH / "UDC"
 
-    private val CONFIGS_PATH: Path = USB_GADGET_PATH / "configs/b.1/"
-    private val FUNCTIONS_PATH: Path = USB_GADGET_PATH / "functions/"
+    private val CONFIGS_PATH: Path = USB_GADGET_PATH / "configs/b.1"
+    private val FUNCTIONS_PATH: Path = USB_GADGET_PATH / "functions"
+    private val UVC_FUNCTION_PATH: Path = FUNCTIONS_PATH / UVC_FUNCTION_NAME
+    private val BACKUP_STATE_FILE: Path = Path("/data/local/tmp/usb_webcam_saved_links.txt")
 
-    private inner class HidFunction(
-        val name: String,
-        val protocol: UByte,
-        val subclass: UByte,
-        val reportLength: UInt,
-        val reportDescriptor: UByteArray
+    private data class UvcFrameConfig(
+        val dirName: String,
+        val width: Int,
+        val height: Int,
+        val defaultInterval: Int,
+        val intervals: List<Int>,
+        val minBitRate: Long,
+        val maxBitRate: Long
     ) {
-        val functionPath: Path
-            get() = FUNCTIONS_PATH / name
-
-        val configPath: Path
-            get() = CONFIGS_PATH / name
+        val maxFrameBufferSize: Int
+            get() = width * height * 2
     }
 
-    private val allHidFunctions = arrayOf(
-        HidFunction(
-            "hid.keyboard",
-            protocol = 1u,
-            subclass = 1u,
-            reportLength = 4u,
-            // @formatter:off
-            reportDescriptor = ubyteArrayOf(0x05u,0x01u,0x09u,0x06u,0xA1u,0x01u,0x85u,0x01u,0x75u,0x01u,0x95u,0x08u,0x05u,0x07u,0x19u,0xE0u,0x29u,0xE7u,0x15u,0x00u,0x25u,0x01u,0x81u,0x02u,0x75u,0x01u,0x95u,0x08u,0x81u,0x03u,0x95u,0x02u,0x75u,0x08u,0x15u,0x00u,0x25u,0xFFu,0x05u,0x07u,0x19u,0x00u,0x29u,0xFFu,0x81u,0x00u,0xC0u,0x05u,0x0Cu,0x09u,0x01u,0xA1u,0x01u,0x85u,0x02u,0x75u,0x10u,0x95u,0x01u,0x26u,0xFFu,0x07u,0x19u,0x00u,0x2Au,0xFFu,0x07u,0x81u,0x00u,0xC0u)
-            // @formatter:on
-        ), HidFunction(
-            "hid.touchpad",
-            protocol = 2u,
-            subclass = 0u,
-            reportLength = 12u,
-            // @formatter:off
-            reportDescriptor = ubyteArrayOf(0x05u, 0x01u, 0x09u, 0x02u, 0xa1u, 0x01u, 0x85u, 0x01u, 0x09u, 0x01u, 0xa1u, 0x00u, 0x05u, 0x09u, 0x19u, 0x01u, 0x29u, 0x02u, 0x15u, 0x00u, 0x25u, 0x01u, 0x75u, 0x01u, 0x95u, 0x02u, 0x81u, 0x02u, 0x95u, 0x06u, 0x81u, 0x03u, 0x05u, 0x01u, 0x09u, 0x30u, 0x09u, 0x31u, 0x15u, 0x81u, 0x25u, 0x7fu, 0x75u, 0x08u, 0x95u, 0x02u, 0x81u, 0x06u, 0x75u, 0x08u, 0x95u, 0x05u, 0x81u, 0x03u, 0xc0u, 0x06u, 0x00u, 0xffu, 0x09u, 0x01u, 0x85u, 0x0eu, 0x09u, 0xc5u, 0x15u, 0x00u, 0x26u, 0xffu, 0x00u, 0x75u, 0x08u, 0x95u, 0x04u, 0xb1u, 0x02u, 0xc0u, 0x05u, 0x0du, 0x09u, 0x05u, 0xa1u, 0x01u, 0x85u, 0x04u, 0x09u, 0x22u, 0xa1u, 0x02u, 0x15u, 0x00u, 0x25u, 0x01u, 0x09u, 0x47u, 0x09u, 0x42u, 0x95u, 0x02u, 0x75u, 0x01u, 0x81u, 0x02u, 0x75u, 0x01u, 0x95u, 0x02u, 0x81u, 0x03u, 0x95u, 0x01u, 0x75u, 0x04u, 0x25u, 0x0fu, 0x09u, 0x51u, 0x81u, 0x02u, 0x05u, 0x01u, 0x15u, 0x00u, 0x26u, 0xc8u, 0x0du, 0x75u, 0x10u, 0x55u, 0x0du, 0x65u, 0x11u, 0x09u, 0x30u, 0x35u, 0x00u, 0x46u, 0x88u, 0x13u, 0x95u, 0x01u, 0x81u, 0x02u, 0x46u, 0x10u, 0x27u, 0x26u, 0x88u, 0x13u, 0x26u, 0x88u, 0x13u, 0x09u, 0x31u, 0x81u, 0x02u, 0x05u, 0x0du, 0x15u, 0x00u, 0x25u, 0x64u, 0x95u, 0x03u, 0xc0u, 0x55u, 0x0cu, 0x66u, 0x01u, 0x10u, 0x47u, 0xffu, 0xffu, 0x00u, 0x00u, 0x27u, 0xffu, 0xffu, 0x00u, 0x00u, 0x75u, 0x10u, 0x95u, 0x01u, 0x09u, 0x56u, 0x81u, 0x02u, 0x09u, 0x54u, 0x25u, 0x7fu, 0x95u, 0x01u, 0x75u, 0x08u, 0x81u, 0x02u, 0x05u, 0x09u, 0x09u, 0x01u, 0x25u, 0x01u, 0x75u, 0x01u, 0x95u, 0x01u, 0x81u, 0x02u, 0x95u, 0x07u, 0x81u, 0x03u, 0x09u, 0xc5u, 0x75u, 0x08u, 0x95u, 0x02u, 0x81u, 0x03u, 0x05u, 0x0du, 0x85u, 0x02u, 0x09u, 0x55u, 0x09u, 0x59u, 0x75u, 0x04u, 0x95u, 0x02u, 0x25u, 0x0fu, 0xb1u, 0x02u, 0x85u, 0x07u, 0x09u, 0x60u, 0x75u, 0x01u, 0x95u, 0x01u, 0x15u, 0x00u, 0x25u, 0x01u, 0xb1u, 0x02u, 0x95u, 0x0fu, 0xb1u, 0x03u, 0x06u, 0x00u, 0xffu, 0x06u, 0x00u, 0xffu, 0x85u, 0x06u, 0x09u, 0xc5u, 0x15u, 0x00u, 0x26u, 0xffu, 0x00u, 0x75u, 0x08u, 0x96u, 0x00u, 0x01u, 0xb1u, 0x02u, 0xc0u, 0x05u, 0x0du, 0x09u, 0x0eu, 0xa1u, 0x01u, 0x85u, 0x03u, 0x09u, 0x22u, 0xa1u, 0x00u, 0x09u, 0x52u, 0x15u, 0x00u, 0x25u, 0x0au, 0x75u, 0x08u, 0x95u, 0x01u, 0xb1u, 0x02u, 0xc0u, 0x09u, 0x22u, 0xa1u, 0x00u, 0x85u, 0x05u, 0x09u, 0x57u, 0x09u, 0x58u, 0x75u, 0x01u, 0x95u, 0x02u, 0x25u, 0x01u, 0xb1u, 0x02u, 0x95u, 0x0eu, 0xb1u, 0x03u, 0xc0u, 0xc0u, 0x06u, 0x00u, 0xffu, 0x09u, 0x01u, 0xa1u, 0x01u, 0x85u, 0x5cu, 0x09u, 0x01u, 0x95u, 0x0bu, 0x75u, 0x08u, 0x81u, 0x06u, 0x85u, 0x0du, 0x09u, 0xc5u, 0x15u, 0x00u, 0x26u, 0xffu, 0x00u, 0x75u, 0x08u, 0x95u, 0x04u, 0xb1u, 0x02u, 0x85u, 0x0cu, 0x09u, 0xc6u, 0x96u, 0xf0u, 0x03u, 0x75u, 0x08u, 0xb1u, 0x02u, 0x85u, 0x0bu, 0x09u, 0xc7u, 0x96u, 0x82u, 0x00u, 0x75u, 0x08u, 0xb1u, 0x02u, 0xc0u)
-           // @formatter:on
+    private val mjpegFrames = listOf(
+        UvcFrameConfig(
+            dirName = "360p",
+            width = 640,
+            height = 360,
+            defaultInterval = 333333,
+            intervals = listOf(166666, 333333, 666666),
+            minBitRate = 18_432_000L,
+            maxBitRate = 110_592_000L
+        ),
+        UvcFrameConfig(
+            dirName = "720p",
+            width = 1280,
+            height = 720,
+            defaultInterval = 333333,
+            intervals = listOf(166666, 333333, 666666),
+            minBitRate = 29_491_200L,
+            maxBitRate = 221_184_000L
+        ),
+        UvcFrameConfig(
+            dirName = "1080p",
+            width = 1920,
+            height = 1080,
+            defaultInterval = 333333,
+            intervals = listOf(166666, 333333, 666666),
+            minBitRate = 66_355_200L,
+            maxBitRate = 497_664_000L
+        )
+    )
+
+    private val uncompressedFrames = listOf(
+        UvcFrameConfig(
+            dirName = "360p",
+            width = 640,
+            height = 360,
+            defaultInterval = 333333,
+            intervals = listOf(333333, 666666, 1000000),
+            minBitRate = 36_864_000L,
+            maxBitRate = 110_592_000L
+        ),
+        UvcFrameConfig(
+            dirName = "480p",
+            width = 640,
+            height = 480,
+            defaultInterval = 333333,
+            intervals = listOf(333333, 666666, 1000000),
+            minBitRate = 49_152_000L,
+            maxBitRate = 147_456_000L
+        ),
+        UvcFrameConfig(
+            dirName = "720p",
+            width = 1280,
+            height = 720,
+            defaultInterval = 666666,
+            intervals = listOf(666666, 1000000, 2000000),
+            minBitRate = 73_728_000L,
+            maxBitRate = 221_184_000L
         )
     )
 
@@ -154,7 +189,6 @@ internal class UsbGadgetManager(val gadgetUserPreferences: GadgetUserPreferences
             if (prefPath.path.isNotBlank()) {
                 this.add(Path(prefPath.path))
             }
-
             this.add(CONFIG_FS_PATH / "g1")
             this.add(CONFIG_FS_PATH / "g2")
         }
@@ -165,13 +199,10 @@ internal class UsbGadgetManager(val gadgetUserPreferences: GadgetUserPreferences
             }
         }
 
-        val gadgetPaths = (runCatching { CONFIG_FS_PATH.listDirectoryEntries() }.getOrNull() ?: run {
-            Timber.e("Failed to list entries at path: $CONFIG_FS_PATH")
-            emptyList()
-        }).filter { it.isDirectory() }
+        val gadgetPaths = (runCatching { CONFIG_FS_PATH.listDirectoryEntries() }.getOrNull() ?: emptyList())
+            .filter { it.isDirectory() }
 
         if (gadgetPaths.isEmpty()) {
-            // TODO: This is WRONG, but it's better than a RuntimeException and I don't have better handling yet
             return pathsToTry.first()
         } else {
             for (path in gadgetPaths) {
@@ -179,164 +210,237 @@ internal class UsbGadgetManager(val gadgetUserPreferences: GadgetUserPreferences
                     return path
                 }
             }
-
             return gadgetPaths.first()
         }
     }
 
     fun createCharacterDevices() {
-        // TODO:
-        //  check if symlinks already exist in configs dir bc if they do, writes will fail due to "device or resource busy",
-        //  which is reasonable, since the function would be active.
+        val currentLinks = getCurrentConfigSymlinks()
 
-        val gadgetFunctionLinksToRestore: List<Pair<Path, Path>> =
-            if (gadgetUserPreferences.disableGadgetFunctionsDuringConfiguration) {
-                getGadgetFunctionLinksToRestore().apply {
-                    // Delete links
-                    forEach { (linkPath, _) ->
-                        runCatching {
+        // Save original non-UVC function symlinks if we haven't already saved them
+        if (!BACKUP_STATE_FILE.exists() && currentLinks.none { it.second.name.startsWith("uvc") }) {
+            saveOriginalConfigState(currentLinks)
+        }
+
+        try {
+            disableGadget()
+        } catch (e: IOException) {
+            Timber.e(e, "Failed to disable USB gadget before UVC config")
+        }
+
+        // Unlink all existing function symlinks in configs/b.1 so uvc.0 is not busy and MTP/ACM don't exhaust DWC3 FIFOs
+        currentLinks.forEach { (linkPath, _) ->
+            runCatching { linkPath.deleteIfExists() }
+        }
+
+        // Configure UVC ConfigFS tree under /config/usb_gadget/g1/functions/uvc.0
+        try {
+            configureUvcFunction()
+        } catch (e: Exception) {
+            Timber.e(e, "Error configuring UVC ConfigFS function")
+        }
+
+        // Configure IAD (Interface Association Descriptor) device class for clean composite UVC + ADB enumeration
+        runCatching {
+            (USB_GADGET_PATH / "bDeviceClass").writeText("0xef\n")
+            (USB_GADGET_PATH / "bDeviceSubClass").writeText("0x02\n")
+            (USB_GADGET_PATH / "bDeviceProtocol").writeText("0x01\n")
+        }
+
+        // Link uvc.0 (and optionally ffs.adb so ADB stays alive) into configs/b.1
+        try {
+            CONFIGS_PATH.createDirectories()
+            val uvcLink = CONFIGS_PATH / "f1"
+            uvcLink.deleteIfExists()
+            uvcLink.createSymbolicLinkPointingTo(UVC_FUNCTION_PATH)
+
+            val keepAdb = !gadgetUserPreferences.disableGadgetFunctionsDuringConfiguration
+            val adbFuncPath = FUNCTIONS_PATH / "ffs.adb"
+            if (keepAdb && adbFuncPath.isDirectory()) {
+                val adbLink = CONFIGS_PATH / "f2"
+                adbLink.deleteIfExists()
+                adbLink.createSymbolicLinkPointingTo(adbFuncPath)
+            }
+
+            runCatching {
+                val configStrPath = CONFIGS_PATH / "strings/0x409/configuration"
+                if (configStrPath.exists()) {
+                    configStrPath.writeText(if (keepAdb) "uvc_adb\n" else "uvc\n")
+                }
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to link UVC function to config")
+        }
+
+        try {
+            enableGadget()
+        } catch (e: IOException) {
+            Timber.e(e, "Failed to enable USB gadget after UVC config")
+        }
+    }
+
+    private fun cleanExistingUvcSymlinks(uvcPath: Path) {
+        val symlinksToDelete = listOf(
+            uvcPath / "streaming/class/fs/h",
+            uvcPath / "streaming/class/hs/h",
+            uvcPath / "streaming/class/ss/h",
+            uvcPath / "streaming/header/h/m",
+            uvcPath / "streaming/header/h/u",
+            uvcPath / "streaming/header/h/h",
+            uvcPath / "control/class/fs/h",
+            uvcPath / "control/class/ss/h"
+        )
+        symlinksToDelete.forEach { link ->
+            runCatching { link.deleteIfExists() }
+        }
+    }
+
+    @Throws(IOException::class)
+    private fun configureUvcFunction() {
+        UVC_FUNCTION_PATH.createDirectories()
+        cleanExistingUvcSymlinks(UVC_FUNCTION_PATH)
+
+        val maxPacket = gadgetUserPreferences.uvcMaxPacketSize.coerceIn(1024, 3072)
+        runCatching { (UVC_FUNCTION_PATH / "streaming_maxpacket").writeText("$maxPacket\n") }
+        runCatching { (UVC_FUNCTION_PATH / "streaming_maxburst").writeText("1\n") }
+        runCatching { (UVC_FUNCTION_PATH / "streaming_interval").writeText("1\n") }
+
+        // Control descriptors
+        val ctrlHeader = UVC_FUNCTION_PATH / "control/header/h"
+        ctrlHeader.createDirectories()
+        createSymlinkSafe(UVC_FUNCTION_PATH / "control/class/fs/h", ctrlHeader)
+        createSymlinkSafe(UVC_FUNCTION_PATH / "control/class/ss/h", ctrlHeader)
+
+        // Format 1: MJPEG
+        val mjpegRoot = UVC_FUNCTION_PATH / "streaming/mjpeg/m"
+        mjpegRoot.createDirectories()
+        for (frame in mjpegFrames) {
+            configureFrameDir(mjpegRoot / frame.dirName, frame)
+        }
+        runCatching { (mjpegRoot / "bmaControls").writeText("0x04\n") }
+
+        // Format 2: Uncompressed YUYV
+        val uncompRoot = UVC_FUNCTION_PATH / "streaming/uncompressed/u"
+        uncompRoot.createDirectories()
+        for (frame in uncompressedFrames) {
+            configureFrameDir(uncompRoot / frame.dirName, frame)
+        }
+
+        // Streaming header & speed class links
+        val streamHeader = UVC_FUNCTION_PATH / "streaming/header/h"
+        streamHeader.createDirectories()
+        createSymlinkSafe(streamHeader / "m", mjpegRoot)
+        createSymlinkSafe(streamHeader / "u", uncompRoot)
+
+        createSymlinkSafe(UVC_FUNCTION_PATH / "streaming/class/fs/h", streamHeader)
+        createSymlinkSafe(UVC_FUNCTION_PATH / "streaming/class/hs/h", streamHeader)
+        createSymlinkSafe(UVC_FUNCTION_PATH / "streaming/class/ss/h", streamHeader)
+    }
+
+    private fun configureFrameDir(frameDir: Path, cfg: UvcFrameConfig) {
+        frameDir.createDirectories()
+        (frameDir / "wWidth").writeText("${cfg.width}\n")
+        (frameDir / "wHeight").writeText("${cfg.height}\n")
+        (frameDir / "dwMinBitRate").writeText("${cfg.minBitRate}\n")
+        (frameDir / "dwMaxBitRate").writeText("${cfg.maxBitRate}\n")
+        (frameDir / "dwMaxVideoFrameBufferSize").writeText("${cfg.maxFrameBufferSize}\n")
+        (frameDir / "dwDefaultFrameInterval").writeText("${cfg.defaultInterval}\n")
+        val intervalsText = cfg.intervals.joinToString(separator = "\n", postfix = "\n")
+        (frameDir / "dwFrameInterval").writeText(intervalsText)
+    }
+
+    private fun createSymlinkSafe(link: Path, target: Path) {
+        runCatching {
+            link.deleteIfExists()
+            link.createSymbolicLinkPointingTo(target)
+        }.onFailure {
+            Timber.w(it, "Failed to create symlink $link -> $target")
+        }
+    }
+
+    private fun getCurrentConfigSymlinks(): List<Pair<Path, Path>> {
+        val entries: List<Path> = runCatching { CONFIGS_PATH.listDirectoryEntries() }.getOrNull() ?: emptyList()
+        return entries.filter { it.isSymbolicLink() }.mapNotNull {
+            runCatching { Pair(it, it.toRealPath()) }.getOrNull()
+        }
+    }
+
+    private fun saveOriginalConfigState(links: List<Pair<Path, Path>>) {
+        runCatching {
+            val lines = mutableListOf<String>()
+            val devClass = runCatching { (USB_GADGET_PATH / "bDeviceClass").readText().trim() }.getOrDefault("0x00")
+            val devSubClass = runCatching { (USB_GADGET_PATH / "bDeviceSubClass").readText().trim() }.getOrDefault("0x00")
+            val devProto = runCatching { (USB_GADGET_PATH / "bDeviceProtocol").readText().trim() }.getOrDefault("0x00")
+            lines.add("CLASS|$devClass|$devSubClass|$devProto")
+            for ((link, target) in links) {
+                lines.add("LINK|${link}|${target}")
+            }
+            BACKUP_STATE_FILE.writeLines(lines)
+        }.onFailure {
+            Timber.w(it, "Failed to save original USB config state")
+        }
+    }
+
+    fun deleteCharacterDevices() {
+        try {
+            disableGadget()
+        } catch (e: IOException) {
+            Timber.w(e, "Failed to disable USB gadget during UVC teardown")
+        }
+
+        // Remove current symlinks in configs/b.1
+        getCurrentConfigSymlinks().forEach { (linkPath, _) ->
+            runCatching { linkPath.deleteIfExists() }
+        }
+
+        cleanExistingUvcSymlinks(UVC_FUNCTION_PATH)
+
+        // Restore saved original links (or fallback to ffs.adb)
+        var restoredAny = false
+        if (BACKUP_STATE_FILE.exists()) {
+            runCatching {
+                val lines = BACKUP_STATE_FILE.readLines()
+                for (line in lines) {
+                    val parts = line.split("|")
+                    if (parts.size == 4 && parts[0] == "CLASS") {
+                        runCatching { (USB_GADGET_PATH / "bDeviceClass").writeText("${parts[1]}\n") }
+                        runCatching { (USB_GADGET_PATH / "bDeviceSubClass").writeText("${parts[2]}\n") }
+                        runCatching { (USB_GADGET_PATH / "bDeviceProtocol").writeText("${parts[3]}\n") }
+                    } else if (parts.size == 3 && parts[0] == "LINK") {
+                        val linkPath = Path(parts[1])
+                        val targetPath = Path(parts[2])
+                        if (targetPath.exists()) {
                             linkPath.deleteIfExists()
+                            linkPath.createSymbolicLinkPointingTo(targetPath)
+                            restoredAny = true
                         }
                     }
                 }
-            } else {
-                emptyList()
-            }
-
-        // Disable gadget before configuring it to work around possible device-specific issue
-        //
-        // Credit to @szescxz on GitHub for finding this workaround
-        //   - https://github.com/Arian04/android-hid-client/issues/50#issuecomment-2915345677
-        // Credit to @alryaz on GitHub for submitting a PR that I unfortunately couldn't accept, since it was based
-        // on outdated code from the main branch
-        //  - https://github.com/Arian04/android-hid-client/pull/64
-        try {
-            disableGadget()
-        } catch (e: IOException) {
-            Timber.e("Failed to disable usb gadget")
-            Timber.e(e)
-        }
-
-        for (hidFunction in allHidFunctions) {
-            try {
-                addHidFunction(hidFunction)
-            } catch (e: IOException) {
-                Timber.e("Failed to add '${hidFunction.name}' function to usb gadget")
-                Timber.e(e)
-            }
-        }
-
-        linkFunctionsToConfig(allHidFunctions)
-
-        gadgetFunctionLinksToRestore.forEach { (linkPath, targetPath) ->
-            runCatching {
-                linkPath.createSymbolicLinkPointingTo(targetPath)
+                BACKUP_STATE_FILE.deleteIfExists()
             }.onFailure {
-                Timber.e("ugh it didn't work, here's some info: link=$linkPath target=$targetPath")
-                Timber.e(it)
+                Timber.w(it, "Failed to restore saved USB gadget links")
+            }
+        }
+
+        if (!restoredAny) {
+            val adbFunc = FUNCTIONS_PATH / "ffs.adb"
+            if (adbFunc.isDirectory()) {
+                runCatching {
+                    (CONFIGS_PATH / "f1").createSymbolicLinkPointingTo(adbFunc)
+                }
             }
         }
 
         try {
             enableGadget()
         } catch (e: IOException) {
-            Timber.e("Failed to reset usb gadget")
-            Timber.e(e)
-        }
-    }
-
-    private fun getGadgetFunctionLinksToRestore(): List<Pair<Path, Path>> {
-        val entries: List<Path> = runCatching { CONFIGS_PATH.listDirectoryEntries() }.getOrNull() ?: run {
-            Timber.e("Failed to list directory entries at path: $CONFIGS_PATH")
-            emptyList()
-        }
-
-        Timber.i(entries.toString())
-
-        val links = entries.filter { it.isSymbolicLink() }
-        Timber.i(links.toString())
-
-        val linkPairs: List<Pair<Path, Path>> = links.mapNotNull {
-            runCatching {
-                // It is extremely important to get the real path, and not just use the link's target, because using
-                // and restoring that relative path target will fail later. I think it's due to some file system
-                // weirdness in the way ConfigFS handles symlinks (play around with `ln -s` and you'll see what I mean)
-                Pair(it, it.toRealPath())
-            }.getOrNull()
-        }
-
-        Timber.i(linkPairs.toString())
-
-        return linkPairs
-    }
-
-    private fun Path.writeAsString(uByte: UByte) = writeAsString(uByte.toUInt())
-
-    private fun Path.writeAsString(uInt: UInt) = writeText(uInt.toString())
-
-    @Throws(IOException::class)
-    private fun addHidFunction(function: HidFunction) {
-        function.functionPath.let {
-            // Ensure this directory (and all its parents) exist
-            it.createDirectories()
-
-            (it / "protocol").writeAsString(function.protocol)
-            (it / "subclass").writeAsString(function.subclass)
-            try {
-                // Not critical, so don't let this one fail the whole operation
-                (it / "no_out_endpoint").writeAsString(1u)
-            } catch (e: IOException) {
-                Timber.w(e)
-            }
-            (it / "report_length").writeAsString(function.reportLength)
-            (it / "report_desc").writeBytes(function.reportDescriptor.asByteArray())
-        }
-    }
-
-    private fun linkFunctionsToConfig(functions: Array<HidFunction>) {
-        if (functions.isEmpty()) {
-            // FIXME: handle this?
-            Timber.w("bruh it's empty")
-            return
-        }
-
-        // Ensure this directory (and all its parents) exist
-        try {
-            CONFIGS_PATH.createDirectories()
-        } catch (e: IOException) {
-            Timber.e("IOException occurred while trying to create all directories in path: $CONFIGS_PATH")
-            Timber.e(e)
-        }
-
-        functions.forEach {
-            try {
-                it.configPath.createSymbolicLinkPointingTo(it.functionPath)
-            } catch (e: java.nio.file.FileAlreadyExistsException) {
-                // NOTE: it's extremely important to make sure you catch Java's FileAlreadyExistsException, not Kotlin's
-                Timber.w("Attempted to create a symlink in a location that already had a file")
-                Timber.d(e)
-            }
-        }
-    }
-
-    private fun resetGadget() {
-        try {
-            disableGadget()
-        } catch (e: IOException) {
-            Timber.w(e, "Failed to disable USB gadget during reset procedure")
-        }
-
-        try {
-            enableGadget()
-        } catch (e: IOException) {
-            Timber.w(e, "Failed to enable USB gadget during reset procedure")
+            Timber.w(e, "Failed to re-enable USB gadget after UVC teardown")
         }
     }
 
     @Throws(IOException::class)
     private fun disableGadget() {
         UDC_PATH.writer(options = arrayOf(StandardOpenOption.SYNC)).use {
-            // For some reason, it was refusing to clear without writing a newline, other whitespace didn't seem to work.
             it.write("\n")
         }
     }
@@ -344,75 +448,34 @@ internal class UsbGadgetManager(val gadgetUserPreferences: GadgetUserPreferences
     @Throws(IOException::class)
     private fun enableGadget() {
         val udc = getUDC()
-
         UDC_PATH.writer(options = arrayOf(StandardOpenOption.SYNC)).use {
-            // This part seems to happen implicitly
             it.write(udc)
-        }
-    }
-
-    @OptIn(ExperimentalPathApi::class)
-    fun deleteCharacterDevices() {
-        for (hidFunction in allHidFunctions) {
-            try {
-                // Clear out function configuration directory (should just point to function path)
-                hidFunction.configPath.deleteRecursively()
-
-                // Delete function directories
-                hidFunction.functionPath.deleteIfExists()
-            } catch (e: IOException) {
-                Timber.e("Failed to remove '${hidFunction.name}' function from usb gadget")
-                Timber.e(e)
-            }
-
-            // Apply changes
-            resetGadget()
-
-            // Delete character devices
-            CharacterDeviceManager.Companion.DevicePaths.all.map { Path(it.path) }.forEach {
-                it.deleteIfExists()
-            }
         }
     }
 
     @Throws(IOException::class)
     fun getUDC(): String {
-        // NOTE:
-        //  Reading the "sys.usb.controller" property will return null when (I think) the gadget is disabled.
-        //  My guess is it returns the *active* UDC, so I can't read the UDC when it's inactive. So we're doing
-        //  it this way instead.
-
-        val udcList: List<Path> = run {
-            val udcDirectoryPath = Path("/sys/class/udc")
-
-            udcDirectoryPath.listDirectoryEntries()
-        }
+        val udcList: List<Path> = Path("/sys/class/udc").listDirectoryEntries()
         Timber.d("UDC value from file listing is: $udcList")
 
         val udcPath: Path = if (udcList.isEmpty()) {
-            // TODO: What do we even do at this point
             Path("")
         } else if (udcList.size == 1) {
             udcList.first()
         } else {
-            // There's more than one, attempt to filter it down I guess
             val filteredList = udcList.filter { it.isSymbolicLink() }
-
             if (filteredList.isEmpty()) {
-                // Just use the unfiltered list I guess
                 udcList.first()
-            } else if (filteredList.size == 1) {
-                filteredList.first()
             } else {
-                Timber.w("filtered list of UDCs has more than one, using first one: $udcList")
-
                 filteredList.first()
             }
         }
 
-        val udc = udcPath.name
+        return udcPath.name
+    }
 
-        return udc
+    companion object {
+        const val UVC_FUNCTION_NAME = "uvc.0"
     }
 }
 

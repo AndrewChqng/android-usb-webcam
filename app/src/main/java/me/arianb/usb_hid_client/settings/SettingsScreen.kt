@@ -14,26 +14,18 @@ import cafe.adriel.voyager.core.screen.Screen
 import cafe.adriel.voyager.navigator.Navigator
 import me.arianb.usb_hid_client.R
 import me.arianb.usb_hid_client.settings.AppSettings.AppThemePreference
-import me.arianb.usb_hid_client.settings.AppSettings.ClearManualInputOnSend
 import me.arianb.usb_hid_client.settings.AppSettings.DynamicColors
-import me.arianb.usb_hid_client.settings.AppSettings.EnablePrecisionTouchpad
-import me.arianb.usb_hid_client.settings.AppSettings.EnableScriptingSupport
 import me.arianb.usb_hid_client.settings.AppSettings.ExperimentalMode
-import me.arianb.usb_hid_client.settings.AppSettings.FullyDisableGadgetDuringConfiguration
-import me.arianb.usb_hid_client.settings.AppSettings.KeyboardCharacterDevicePath
-import me.arianb.usb_hid_client.settings.AppSettings.MediaKeyPassthrough
 import me.arianb.usb_hid_client.settings.AppSettings.PreferenceCategory
-import me.arianb.usb_hid_client.settings.AppSettings.TouchpadCharacterDevicePath
-import me.arianb.usb_hid_client.settings.AppSettings.TouchpadFullscreenInLandscape
-import me.arianb.usb_hid_client.settings.AppSettings.TouchpadLoopbackMode
+import me.arianb.usb_hid_client.settings.AppSettings.PureUvcOnlyModePreference
 import me.arianb.usb_hid_client.settings.AppSettings.UsbGadgetPath
+import me.arianb.usb_hid_client.settings.AppSettings.UvcMaxPacketPreference
+import me.arianb.usb_hid_client.settings.AppSettings.UvcVideoDevicePath
 import me.arianb.usb_hid_client.ui.theme.PaddingNormal
 import me.arianb.usb_hid_client.ui.theme.isDynamicColorAvailable
 import me.arianb.usb_hid_client.ui.utils.BasicPage
 import me.arianb.usb_hid_client.ui.utils.DarkLightModePreviews
-import me.arianb.usb_hid_client.ui.utils.Experimental
 import me.arianb.usb_hid_client.ui.utils.SimpleNavTopBar
-import me.arianb.usb_hid_client.ui.utils.isExperimentalModeEnabled
 
 class SettingsScreen : Screen {
     @Composable
@@ -61,44 +53,21 @@ fun SettingsPage() {
                 DynamicColors()
             }
         }
-        PreferenceCategory(
-            title = stringResource(R.string.direct_input),
-        ) {
-            MediaKeyPassthrough()
-        }
-        PreferenceCategory(
-            title = stringResource(R.string.manual_input),
-        ) {
-            ClearManualInputOnSend()
-            EnableScriptingSupport()
-        }
-        PreferenceCategory(
-            title = stringResource(R.string.touchpad_label),
-        ) {
-            TouchpadFullscreenInLandscape()
-            TouchpadLoopbackMode()
-            EnablePrecisionTouchpad()
-        }
-
-        // only set `showDivider = false` for the last category.
-        // haven't found a nice way to do that implicitly yet.
 
         PreferenceCategory(
-            title = stringResource(R.string.misc_header),
-            showDivider = isExperimentalModeEnabled()
+            title = stringResource(R.string.uvc_gadget_header),
         ) {
+            PureUvcOnlyModePreference()
+            UvcMaxPacketPreference()
+        }
+
+        PreferenceCategory(
+            title = stringResource(R.string.device_specific_quirks_header),
+            showDivider = false
+        ) {
+            UsbGadgetPath()
+            UvcVideoDevicePath()
             ExperimentalMode()
-        }
-        Experimental {
-            PreferenceCategory(
-                title = stringResource(R.string.device_specific_quirks_header),
-                showDivider = false
-            ) {
-                FullyDisableGadgetDuringConfiguration()
-                UsbGadgetPath()
-                KeyboardCharacterDevicePath()
-                TouchpadCharacterDevicePath()
-            }
         }
     }
 }
@@ -111,7 +80,6 @@ private fun SettingsTopBar() {
     )
 }
 
-// Specializations of the generic preference composable "helper" functions
 private object AppSettings {
     @Composable
     fun PreferenceCategory(
@@ -150,15 +118,6 @@ private object AppSettings {
     }
 
     @Composable
-    fun TouchpadLoopbackMode() {
-        SwitchPreference(
-            title = stringResource(R.string.touchpad_loopback_mode_title),
-            summary = stringResource(R.string.touchpad_loopback_mode_summary),
-            preference = AppPreference.LoopbackMode
-        )
-    }
-
-    @Composable
     fun DynamicColors() {
         SwitchPreference(
             title = stringResource(R.string.dynamic_colors_title),
@@ -167,37 +126,30 @@ private object AppSettings {
     }
 
     @Composable
-    fun MediaKeyPassthrough() {
+    fun PureUvcOnlyModePreference() {
         SwitchPreference(
-            title = stringResource(R.string.volume_button_passthrough_title),
-            summary = stringResource(R.string.volume_button_passthrough_summary),
-            preference = AppPreference.VolumeButtonPassthroughKey
+            title = stringResource(R.string.disable_gadget_functions_during_config),
+            summary = stringResource(R.string.disable_gadget_functions_during_config_summary),
+            preference = AppPreference.DisableGadgetFunctionsDuringConfiguration
         )
     }
 
     @Composable
-    fun ClearManualInputOnSend() {
-        SwitchPreference(
-            title = stringResource(R.string.clear_manual_input_title),
-            preference = AppPreference.ClearManualInputKey
-        )
-    }
-
-    @Composable
-    fun TouchpadFullscreenInLandscape() {
-        SwitchPreference(
-            title = stringResource(R.string.touchpad_fullscreen_in_landscape_title),
-            summary = stringResource(R.string.touchpad_fullscreen_in_landscape_summary),
-            preference = AppPreference.TouchpadFullscreenInLandscape
-        )
-    }
-
-    @Composable
-    fun EnablePrecisionTouchpad() {
-        SwitchPreference(
-            title = stringResource(R.string.enable_precision_touchpad_title),
-            summary = stringResource(R.string.enable_precision_touchpad_summary),
-            preference = AppPreference.EnablePrecisionTouchpad
+    fun UvcMaxPacketPreference(
+        enabled: Boolean = true,
+        settingsViewModel: SettingsViewModel = viewModel()
+    ) {
+        val preferencesState by settingsViewModel.userPreferencesFlow.collectAsState()
+        val selected = preferencesState.uvcMaxPacketOption
+        val options = UvcMaxPacketOption.values
+        BasicListPreference(
+            title = stringResource(R.string.uvc_maxpacket_title),
+            options = options,
+            enabled = enabled,
+            selected = selected,
+            onPreferenceClicked = { opt ->
+                settingsViewModel.setPreference(AppPreference.UvcMaxPacketSizePref, opt)
+            }
         )
     }
 
@@ -220,38 +172,11 @@ private object AppSettings {
     }
 
     @Composable
-    fun KeyboardCharacterDevicePath() {
+    fun UvcVideoDevicePath() {
         TextDialogPreference(
-            title = stringResource(R.string.keyboard_character_device_path),
-            preference = AppPreference.KeyboardCharacterDevicePath,
-            property = UserPreferences::keyboardCharacterDevicePath
-        )
-    }
-
-    @Composable
-    fun TouchpadCharacterDevicePath() {
-        TextDialogPreference(
-            title = stringResource(R.string.touchpad_character_device_path),
-            preference = AppPreference.TouchpadCharacterDevicePath,
-            property = UserPreferences::touchpadCharacterDevicePath
-        )
-    }
-
-    @Composable
-    fun FullyDisableGadgetDuringConfiguration() {
-        SwitchPreference(
-            title = stringResource(R.string.disable_gadget_functions_during_config),
-            summary = stringResource(R.string.disable_gadget_functions_during_config_summary),
-            preference = AppPreference.DisableGadgetFunctionsDuringConfiguration
-        )
-    }
-
-    @Composable
-    fun EnableScriptingSupport() {
-        SwitchPreference(
-            title = stringResource(R.string.enable_scripting_support_title),
-            summary = stringResource(R.string.enable_scripting_support_summary),
-            preference = AppPreference.EnableScriptingSupport
+            title = stringResource(R.string.uvc_video_device_path_title),
+            preference = AppPreference.UvcVideoDevicePathPref,
+            property = UserPreferences::uvcVideoDevicePath
         )
     }
 }

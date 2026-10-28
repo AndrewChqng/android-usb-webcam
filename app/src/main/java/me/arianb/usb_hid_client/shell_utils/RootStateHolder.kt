@@ -10,7 +10,8 @@ enum class RootMethod {
     UNKNOWN,
     UNROOTED,
     MAGISK,
-    KERNELSU
+    KERNELSU,
+    APATCH
 }
 
 data class RootState(
@@ -26,26 +27,24 @@ class RootStateHolder private constructor() {
         put(RootMethod.UNROOTED, null)
         put(RootMethod.MAGISK, "magiskpolicy --live")
         put(RootMethod.KERNELSU, "ksud sepolicy patch")
+        put(RootMethod.APATCH, "apd sepolicy patch")
     }
     private val rootBinaryMap: Map<String, RootMethod> = buildMap {
         put("magisk", RootMethod.MAGISK)
         put("magiskpolicy", RootMethod.MAGISK)
         put("ksud", RootMethod.KERNELSU)
+        put("apd", RootMethod.APATCH)
     }
 
-    // TODO: should this be part of RootState?
     val sepolicyCommand: String?
         get() {
             val rootMethod = detectRootMethod()
-
             return sepolicyMap[rootMethod]
         }
 
     fun hasRootPermissions(): Boolean {
         val hasRootPermissions = Shell.getShell().isRoot
-
         _uiState.update { it.copy(missingRootPrivileges = !hasRootPermissions) }
-
         return hasRootPermissions
     }
 
@@ -56,7 +55,6 @@ class RootStateHolder private constructor() {
         }
 
         for ((binary, matchingRootMethod) in rootBinaryMap) {
-            //Timber.d("checking for binary: %s", binary);
             val commandResult = Shell.cmd("type $binary").exec()
             if (commandResult.code == 0) {
                 Timber.i("Detected root method as: %s", matchingRootMethod)
@@ -71,13 +69,7 @@ class RootStateHolder private constructor() {
         private var INSTANCE: RootStateHolder? = null
         fun getInstance(): RootStateHolder {
             return INSTANCE ?: synchronized(this) {
-                INSTANCE?.let {
-                    return it
-                }
-
-                val instance = RootStateHolder()
-                INSTANCE = instance
-                instance
+                INSTANCE ?: RootStateHolder().also { INSTANCE = it }
             }
         }
     }

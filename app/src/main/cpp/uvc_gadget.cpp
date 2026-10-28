@@ -1,0 +1,899 @@
+#include "uvc_gadget.h"
+
+#include <android/log.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <jni.h>
+#include <poll.h>
+#include <pthread.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/eventfd.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <sys/time.h>
+#include <unistd.h>
+
+#include <atomic>
+#include <mutex>
+
+#define LOG_TAG "UvcGadgetJNI"
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+namespace {
+
+constexpr int kNumV4l2Buffers = 4;
+
+// Format table matching our ConfigFS layout in UsbGadgetService.kt:
+// Format 1: MJPEG (1: 640x360, 2: 1280x720, 3: 1920x1080)
+// Format 2: YUYV  (1: 640x360, 2: 640x480,  3: 1280x720)
+static const UvcFormatDesc kSupportedFormats[2] = {
+    {
+        .formatIndex = 1,
+        .fourcc = V4L2_PIX_FMT_MJPEG,
+        .numFrames = 3,
+        .frames = {
+            {1, 640, 360, 333333, {166666, 333333, 666666, 0}},
+            {2, 1280, 720, 333333, {166666, 333333, 666666, 0}},
+            {3, 1920, 1080, 333333, {166666, 333333, 666666, 0}},
+        },
+    },
+    {
+        .formatIndex = 2,
+        .fourcc = V4L2_PIX_FMT_YUYV,
+        .numFrames = 3,
+        .frames = {
+            {1, 640, 360, 333333, {333333, 666666, 1000000, 0}},
+            {2, 640, 480, 333333, {333333, 666666, 1000000, 0}},
+            {3, 1280, 720, 666666, {666666, 1000000, 2000000, 0}},
+        },
+    },
+};
+
+struct MmapBuffer {
+    void* start = nullptr;
+    size_t length = 0;
+    bool queued = false;
+};
+
+struct UvcContext {
+    int v4l2_fd = -1;
+    int stop_efd = -1;
+    uint32_t max_payload_size = 3072;
+
+    uint8_t current_control = 0; // UVC_VS_PROBE_CONTROL or UVC_VS_COMMIT_CONTROL
+    struct uvc_streaming_control probe_ctrl {};
+    struct uvc_streaming_control commit_ctrl {};
+
+    uint32_t active_fourcc = V4L2_PIX_FMT_MJPEG;
+    uint16_t active_width = 1280;
+    uint16_t active_height = 720;
+    uint32_t active_interval = 333333;
+
+    std::atomic<bool> is_streaming{false};
+    std::mutex stream_mutex;
+    MmapBuffer buffers[kNumV4l2Buffers]{};
+    uint32_t num_buffers = 0;
+    uint32_t frame_sequence = 0;
+};
+
+static std::mutex g_ctx_mutex;
+static UvcContext* g_ctx = nullptr;
+
+// Minimal valid 16x16 black JPEG used to prime V4L2 buffers on STREAMON before Camera2 delivers its first frame
+static const uint8_t kTinyBlackJpeg[] = {
+    0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01,
+    0x01, 0x01, 0x00, 0x48, 0x00, 0x48, 0x00, 0x00, 0xff, 0xdb, 0x00, 0x43,
+    0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x10,
+    0x00, 0x10, 0x01, 0x01, 0x11, 0x00, 0xff, 0xc4, 0x00, 0x14, 0x00, 0x01,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0xff, 0xc4, 0x00, 0x14, 0x10, 0x01, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00,
+    0x37, 0xff, 0xd9
+};
+
+void fillStreamingControl(
+    UvcContext* ctx,
+    struct uvc_streaming_control* ctrl,
+    int formatIndex,
+    int frameIndex,
+    uint32_t requestedInterval
+) {
+    memset(ctrl, 0, sizeof(*ctrl));
+
+    int fmtIdx = (formatIndex >= 1 && formatIndex <= 2) ? (formatIndex - 1) : 0;
+    const UvcFormatDesc& fmt = kSupportedFormats[fmtIdx];
+
+    int frmIdx = (frameIndex >= 1 && frameIndex <= fmt.numFrames) ? (frameIndex - 1) : 0;
+    const UvcFrameDesc& frm = fmt.frames[frmIdx];
+
+    uint32_t interval = frm.defaultInterval;
+    if (requestedInterval != 0) {
+        for (int i = 0; i < 4 && frm.intervals[i] != 0; ++i) {
+            interval = frm.intervals[i];
+            if (requestedInterval <= frm.intervals[i]) {
+                break;
+            }
+        }
+    }
+
+    ctrl->bmHint = 1; // dwFrameInterval
+    ctrl->bFormatIndex = fmt.formatIndex;
+    ctrl->bFrameIndex = frm.frameIndex;
+    ctrl->dwFrameInterval = interval;
+    ctrl->wKeyFrameRate = 0;
+    ctrl->wPFrameRate = 0;
+    ctrl->wCompQuality = 0;
+    ctrl->wCompWindowSize = 0;
+    ctrl->wDelay = 0;
+    ctrl->dwMaxVideoFrameSize = static_cast<uint32_t>(frm.width) * static_cast<uint32_t>(frm.height) * 2u;
+    ctrl->dwMaxPayloadTransferSize = ctx->max_payload_size;
+    ctrl->bmFramingInfo = 3;
+    ctrl->bPreferedVersion = 1;
+    ctrl->bMaxVersion = 1;
+}
+
+void stopV4l2StreamingLocked(UvcContext* ctx) {
+    if (!ctx) return;
+
+    if (ctx->is_streaming.exchange(false)) {
+        int type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+        if (ioctl(ctx->v4l2_fd, VIDIOC_STREAMOFF, &type) < 0) {
+            LOGW("VIDIOC_STREAMOFF failed: %s", strerror(errno));
+        }
+    }
+
+    for (uint32_t i = 0; i < ctx->num_buffers; ++i) {
+        if (ctx->buffers[i].start && ctx->buffers[i].start != MAP_FAILED) {
+            munmap(ctx->buffers[i].start, ctx->buffers[i].length);
+        }
+        ctx->buffers[i].start = nullptr;
+        ctx->buffers[i].length = 0;
+        ctx->buffers[i].queued = false;
+    }
+    ctx->num_buffers = 0;
+
+    struct v4l2_requestbuffers req {};
+    req.count = 0;
+    req.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+    req.memory = V4L2_MEMORY_MMAP;
+    ioctl(ctx->v4l2_fd, VIDIOC_REQBUFS, &req);
+}
+
+bool startV4l2StreamingLocked(UvcContext* ctx) {
+    stopV4l2StreamingLocked(ctx);
+
+    struct v4l2_format fmt {};
+    fmt.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+    fmt.fmt.pix.width = ctx->active_width;
+    fmt.fmt.pix.height = ctx->active_height;
+    fmt.fmt.pix.pixelformat = ctx->active_fourcc;
+    fmt.fmt.pix.field = V4L2_FIELD_NONE;
+    if (ctx->active_fourcc == V4L2_PIX_FMT_MJPEG) {
+        fmt.fmt.pix.sizeimage = static_cast<uint32_t>(ctx->active_width) * ctx->active_height * 2u;
+    } else {
+        fmt.fmt.pix.bytesperline = ctx->active_width * 2u;
+        fmt.fmt.pix.sizeimage = fmt.fmt.pix.bytesperline * ctx->active_height;
+    }
+
+    if (ioctl(ctx->v4l2_fd, VIDIOC_S_FMT, &fmt) < 0) {
+        LOGE("VIDIOC_S_FMT(%ux%u, fourcc=0x%x) failed: %s",
+             ctx->active_width, ctx->active_height, ctx->active_fourcc, strerror(errno));
+        return false;
+    }
+
+    struct v4l2_requestbuffers req {};
+    req.count = kNumV4l2Buffers;
+    req.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+    req.memory = V4L2_MEMORY_MMAP;
+    if (ioctl(ctx->v4l2_fd, VIDIOC_REQBUFS, &req) < 0 || req.count < 2) {
+        LOGE("VIDIOC_REQBUFS failed: %s (count=%u)", strerror(errno), req.count);
+        return false;
+    }
+
+    ctx->num_buffers = req.count > kNumV4l2Buffers ? kNumV4l2Buffers : req.count;
+    ctx->frame_sequence = 0;
+
+    for (uint32_t i = 0; i < ctx->num_buffers; ++i) {
+        struct v4l2_buffer buf {};
+        buf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+        buf.memory = V4L2_MEMORY_MMAP;
+        buf.index = i;
+        if (ioctl(ctx->v4l2_fd, VIDIOC_QUERYBUF, &buf) < 0) {
+            LOGE("VIDIOC_QUERYBUF[%u] failed: %s", i, strerror(errno));
+            stopV4l2StreamingLocked(ctx);
+            return false;
+        }
+
+        void* ptr = mmap(nullptr, buf.length, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->v4l2_fd, buf.m.offset);
+        if (ptr == MAP_FAILED) {
+            LOGE("mmap[%u] failed: %s", i, strerror(errno));
+            stopV4l2StreamingLocked(ctx);
+            return false;
+        }
+
+        ctx->buffers[i].start = ptr;
+        ctx->buffers[i].length = buf.length;
+        ctx->buffers[i].queued = false;
+
+        // Pre-fill initial buffer with valid black frame and queue so host gets immediate data on STREAMON
+        if (ctx->active_fourcc == V4L2_PIX_FMT_MJPEG) {
+            memcpy(ptr, kTinyBlackJpeg, sizeof(kTinyBlackJpeg));
+            buf.bytesused = sizeof(kTinyBlackJpeg);
+        } else {
+            // Black in YUYV is Y=0x00, U=0x80, V=0x80
+            uint8_t* p = static_cast<uint8_t*>(ptr);
+            size_t frameBytes = static_cast<size_t>(ctx->active_width) * ctx->active_height * 2u;
+            if (frameBytes > buf.length) frameBytes = buf.length;
+            for (size_t j = 0; j + 1 < frameBytes; j += 2) {
+                p[j] = 0x00;
+                p[j + 1] = 0x80;
+            }
+            buf.bytesused = static_cast<uint32_t>(frameBytes);
+        }
+
+        if (ioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf) == 0) {
+            ctx->buffers[i].queued = true;
+        }
+    }
+
+    int type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+    if (ioctl(ctx->v4l2_fd, VIDIOC_STREAMON, &type) < 0) {
+        LOGE("VIDIOC_STREAMON failed: %s", strerror(errno));
+        stopV4l2StreamingLocked(ctx);
+        return false;
+    }
+
+    ctx->is_streaming.store(true);
+    LOGI("V4L2 UVC stream started: %ux%u fourcc=0x%x interval=%u",
+         ctx->active_width, ctx->active_height, ctx->active_fourcc, ctx->active_interval);
+    return true;
+}
+
+void handleUvcSetupEvent(UvcContext* ctx, const struct usb_ctrlrequest& ctrl, struct uvc_request_data& resp) {
+    resp.length = -EL2HLT; // Stall by default if unhandled
+
+    if ((ctrl.bRequestType & USB_TYPE_MASK) != USB_TYPE_CLASS) {
+        return;
+    }
+
+    const uint8_t recip = ctrl.bRequestType & USB_RECIP_MASK;
+    if (recip != USB_RECIP_INTERFACE) {
+        return;
+    }
+
+    const uint8_t intf = ctrl.wIndex & 0xff;
+    const uint8_t entityId = (ctrl.wIndex >> 8) & 0xff;
+    const uint8_t cs = (ctrl.wValue >> 8) & 0xff;
+
+    // VideoControl interface (entity 0 or camera/processing unit queries)
+    if (intf == 0 || (entityId != 0)) {
+        if (cs == UVC_VC_REQUEST_ERROR_CODE_CONTROL) {
+            resp.data[0] = 0x06; // Invalid control
+            resp.length = 1;
+        } else {
+            // Return benign defaults for control interface requests so picky hosts never hang
+            switch (ctrl.bRequest) {
+                case UVC_SET_CUR:
+                    resp.data[0] = 0x00;
+                    resp.length = ctrl.wLength;
+                    break;
+                case UVC_GET_INFO:
+                    resp.data[0] = 0x03;
+                    resp.length = 1;
+                    break;
+                default:
+                    memset(resp.data, 0, sizeof(resp.data));
+                    resp.length = ctrl.wLength > sizeof(resp.data) ? sizeof(resp.data) : ctrl.wLength;
+                    break;
+            }
+        }
+        return;
+    }
+
+    // VideoStreaming interface (VS_PROBE_CONTROL = 1, VS_COMMIT_CONTROL = 2)
+    if (cs != UVC_VS_PROBE_CONTROL && cs != UVC_VS_COMMIT_CONTROL) {
+        return;
+    }
+
+    ctx->current_control = cs;
+    struct uvc_streaming_control* target = (cs == UVC_VS_PROBE_CONTROL) ? &ctx->probe_ctrl : &ctx->commit_ctrl;
+
+    switch (ctrl.bRequest) {
+        case UVC_SET_CUR:
+            resp.data[0] = 0x00;
+            resp.length = ctrl.wLength;
+            break;
+
+        case UVC_GET_CUR:
+            memcpy(resp.data, target, sizeof(*target));
+            resp.length = ctrl.wLength < sizeof(*target) ? ctrl.wLength : sizeof(*target);
+            break;
+
+        case UVC_GET_MIN:
+        case UVC_GET_MAX:
+        case UVC_GET_DEF: {
+            struct uvc_streaming_control temp {};
+            fillStreamingControl(
+                ctx,
+                &temp,
+                target->bFormatIndex ? target->bFormatIndex : 1,
+                target->bFrameIndex ? target->bFrameIndex : 2,
+                (ctrl.bRequest == UVC_GET_MIN) ? 166666 : ((ctrl.bRequest == UVC_GET_MAX) ? 1000000 : 333333)
+            );
+            memcpy(resp.data, &temp, sizeof(temp));
+            resp.length = ctrl.wLength < sizeof(temp) ? ctrl.wLength : sizeof(temp);
+            break;
+        }
+
+        case UVC_GET_RES:
+            memset(resp.data, 0, sizeof(resp.data));
+            resp.length = ctrl.wLength < sizeof(*target) ? ctrl.wLength : sizeof(*target);
+            break;
+
+        case UVC_GET_LEN:
+            resp.data[0] = sizeof(struct uvc_streaming_control);
+            resp.data[1] = 0x00;
+            resp.length = 2;
+            break;
+
+        case UVC_GET_INFO:
+            resp.data[0] = 0x03; // Supports GET and SET
+            resp.length = 1;
+            break;
+    }
+}
+
+void handleUvcDataEvent(UvcContext* ctx, const struct uvc_request_data& data) {
+    if (ctx->current_control != UVC_VS_PROBE_CONTROL && ctx->current_control != UVC_VS_COMMIT_CONTROL) {
+        return;
+    }
+    if (data.length < 26) {
+        return;
+    }
+
+    const auto* incoming = reinterpret_cast<const struct uvc_streaming_control*>(data.data);
+    struct uvc_streaming_control resolved {};
+    fillStreamingControl(ctx, &resolved, incoming->bFormatIndex, incoming->bFrameIndex, incoming->dwFrameInterval);
+
+    ctx->probe_ctrl = resolved;
+    if (ctx->current_control == UVC_VS_COMMIT_CONTROL) {
+        ctx->commit_ctrl = resolved;
+
+        int fmtIdx = (resolved.bFormatIndex >= 1 && resolved.bFormatIndex <= 2) ? (resolved.bFormatIndex - 1) : 0;
+        const UvcFormatDesc& fmt = kSupportedFormats[fmtIdx];
+        int frmIdx = (resolved.bFrameIndex >= 1 && resolved.bFrameIndex <= fmt.numFrames) ? (resolved.bFrameIndex - 1) : 0;
+        const UvcFrameDesc& frm = fmt.frames[frmIdx];
+
+        ctx->active_fourcc = fmt.fourcc;
+        ctx->active_width = frm.width;
+        ctx->active_height = frm.height;
+        ctx->active_interval = resolved.dwFrameInterval ? resolved.dwFrameInterval : frm.defaultInterval;
+
+        LOGI("Host committed UVC format: fmt=%u (%s) %ux%u interval=%u",
+             fmt.formatIndex,
+             (fmt.fourcc == V4L2_PIX_FMT_MJPEG) ? "MJPEG" : "YUYV",
+             ctx->active_width,
+             ctx->active_height,
+             ctx->active_interval);
+    }
+}
+
+// Helper to map destination (x, y) in [0..dstW-1, 0..dstH-1] back to source (sx, sy) in [0..srcW-1, 0..srcH-1]
+inline void mapDestToSrc(
+    int dx, int dy, int dstW, int dstH,
+    int srcW, int srcH, int rotation, bool mirror,
+    int& sx, int& sy
+) {
+    int mx = mirror ? (dstW - 1 - dx) : dx;
+    int my = dy;
+
+    // Normalize coordinates into [0..dstW, 0..dstH] then rotate
+    int rx, ry, rw, rh;
+    switch (rotation) {
+        case 90:
+            rx = my;
+            ry = dstW - 1 - mx;
+            rw = dstH;
+            rh = dstW;
+            break;
+        case 180:
+            rx = dstW - 1 - mx;
+            ry = dstH - 1 - my;
+            rw = dstW;
+            rh = dstH;
+            break;
+        case 270:
+            rx = dstH - 1 - my;
+            ry = mx;
+            rw = dstH;
+            rh = dstW;
+            break;
+        default: // 0
+            rx = mx;
+            ry = my;
+            rw = dstW;
+            rh = dstH;
+            break;
+    }
+
+    // Center-crop + scale from source aspect ratio to destination aspect ratio
+    // Use integer arithmetic for speed
+    if (srcW * rh > srcH * rw) {
+        // Source is wider than destination: crop horizontally
+        int croppedSrcW = (srcH * rw) / rh;
+        int offsetX = (srcW - croppedSrcW) / 2;
+        sx = offsetX + (rx * croppedSrcW) / rw;
+        sy = (ry * srcH) / rh;
+    } else {
+        // Source is taller than (or equal to) destination: crop vertically
+        int croppedSrcH = (srcW * rh) / rw;
+        int offsetY = (srcH - croppedSrcH) / 2;
+        sx = (rx * srcW) / rw;
+        sy = offsetY + (ry * croppedSrcH) / rh;
+    }
+
+    if (sx < 0) sx = 0;
+    else if (sx >= srcW) sx = srcW - 1;
+    if (sy < 0) sy = 0;
+    else if (sy >= srcH) sy = srcH - 1;
+}
+
+} // namespace
+
+extern "C" JNIEXPORT jint JNICALL
+Java_me_arianb_usb_1hid_1client_webcam_UvcNative_nativeOpen(
+    JNIEnv* env,
+    jobject /* thiz */,
+    jstring jDevicePath,
+    jint maxPayloadSize
+) {
+    std::lock_guard<std::mutex> lock(g_ctx_mutex);
+
+    if (g_ctx != nullptr) {
+        std::lock_guard<std::mutex> slock(g_ctx->stream_mutex);
+        stopV4l2StreamingLocked(g_ctx);
+        if (g_ctx->v4l2_fd >= 0) close(g_ctx->v4l2_fd);
+        if (g_ctx->stop_efd >= 0) close(g_ctx->stop_efd);
+        delete g_ctx;
+        g_ctx = nullptr;
+    }
+
+    const char* path = env->GetStringUTFChars(jDevicePath, nullptr);
+    int fd = open(path, O_RDWR | O_NONBLOCK);
+    if (fd < 0) {
+        int err = errno;
+        LOGE("Failed to open %s: %s (errno=%d)", path, strerror(err), err);
+        env->ReleaseStringUTFChars(jDevicePath, path);
+        return -err;
+    }
+    LOGI("Opened UVC V4L2 device: %s (fd=%d)", path, fd);
+    env->ReleaseStringUTFChars(jDevicePath, path);
+
+    struct v4l2_capability cap {};
+    if (ioctl(fd, VIDIOC_QUERYCAP, &cap) < 0) {
+        int err = errno;
+        LOGE("VIDIOC_QUERYCAP failed: %s", strerror(err));
+        close(fd);
+        return -err;
+    }
+
+    auto* ctx = new UvcContext();
+    ctx->v4l2_fd = fd;
+    ctx->stop_efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    ctx->max_payload_size = (maxPayloadSize > 0) ? static_cast<uint32_t>(maxPayloadSize) : 3072u;
+
+    // Default to 1280x720 MJPEG @ 30fps
+    fillStreamingControl(ctx, &ctx->probe_ctrl, 1, 2, 333333);
+    fillStreamingControl(ctx, &ctx->commit_ctrl, 1, 2, 333333);
+
+    // Subscribe to all UVC gadget V4L2 events
+    for (uint32_t evType = UVC_EVENT_FIRST; evType <= UVC_EVENT_LAST; ++evType) {
+        struct v4l2_event_subscription sub {};
+        sub.type = evType;
+        if (ioctl(fd, VIDIOC_SUBSCRIBE_EVENT, &sub) < 0) {
+            LOGW("VIDIOC_SUBSCRIBE_EVENT(%u) failed: %s", evType, strerror(errno));
+        }
+    }
+
+    g_ctx = ctx;
+    return fd;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_me_arianb_usb_1hid_1client_webcam_UvcNative_nativeRunEventLoop(
+    JNIEnv* env,
+    jobject /* thiz */,
+    jobject callback
+) {
+    UvcContext* ctx = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_ctx_mutex);
+        ctx = g_ctx;
+    }
+    if (!ctx || ctx->v4l2_fd < 0) {
+        LOGE("nativeRunEventLoop called without valid context");
+        return;
+    }
+
+    jclass cbClass = env->GetObjectClass(callback);
+    jmethodID onStreamStateChanged = env->GetMethodID(cbClass, "onStreamStateChanged", "(ZZIII)V");
+    jmethodID onHostConnectionChanged = env->GetMethodID(cbClass, "onHostConnectionChanged", "(Z)V");
+
+    struct pollfd pfds[2]{};
+    pfds[0].fd = ctx->v4l2_fd;
+    pfds[0].events = POLLPRI | POLLERR | POLLHUP;
+    pfds[1].fd = ctx->stop_efd;
+    pfds[1].events = POLLIN;
+
+    LOGI("Entering UVC V4L2 event loop (fd=%d)", ctx->v4l2_fd);
+
+    while (true) {
+        int ret = poll(pfds, 2, 1000);
+        if (ret < 0) {
+            if (errno == EINTR) continue;
+            LOGE("poll() error in UVC loop: %s", strerror(errno));
+            break;
+        }
+        if (ret == 0) {
+            continue;
+        }
+
+        if (pfds[1].revents & POLLIN) {
+            LOGI("Stop signal received on eventfd, exiting UVC loop");
+            break;
+        }
+
+        if (pfds[0].revents & POLLPRI) {
+            struct v4l2_event v4l2_ev {};
+            while (ioctl(ctx->v4l2_fd, VIDIOC_DQEVENT, &v4l2_ev) == 0) {
+                const auto* uvc_ev = reinterpret_cast<const struct uvc_event*>(&v4l2_ev.u.data);
+
+                switch (v4l2_ev.type) {
+                    case UVC_EVENT_CONNECT:
+                        LOGI("UVC_EVENT_CONNECT (speed=%d)", uvc_ev->speed);
+                        env->CallVoidMethod(callback, onHostConnectionChanged, JNI_TRUE);
+                        break;
+
+                    case UVC_EVENT_DISCONNECT: {
+                        LOGI("UVC_EVENT_DISCONNECT");
+                        {
+                            std::lock_guard<std::mutex> slock(ctx->stream_mutex);
+                            stopV4l2StreamingLocked(ctx);
+                        }
+                        env->CallVoidMethod(callback, onStreamStateChanged, JNI_FALSE, JNI_TRUE, 0, 0, 0);
+                        env->CallVoidMethod(callback, onHostConnectionChanged, JNI_FALSE);
+                        break;
+                    }
+
+                    case UVC_EVENT_SETUP: {
+                        struct uvc_request_data resp {};
+                        handleUvcSetupEvent(ctx, uvc_ev->req, resp);
+                        if (ioctl(ctx->v4l2_fd, UVCIOC_SEND_RESPONSE, &resp) < 0) {
+                            LOGW("UVCIOC_SEND_RESPONSE failed: %s", strerror(errno));
+                        }
+                        break;
+                    }
+
+                    case UVC_EVENT_DATA:
+                        handleUvcDataEvent(ctx, uvc_ev->data);
+                        break;
+
+                    case UVC_EVENT_STREAMON: {
+                        LOGI("UVC_EVENT_STREAMON");
+                        bool started = false;
+                        {
+                            std::lock_guard<std::mutex> slock(ctx->stream_mutex);
+                            started = startV4l2StreamingLocked(ctx);
+                        }
+                        if (started) {
+                            bool isMjpeg = (ctx->active_fourcc == V4L2_PIX_FMT_MJPEG);
+                            int fps = (ctx->active_interval > 0) ? static_cast<int>(10000000u / ctx->active_interval) : 30;
+                            env->CallVoidMethod(
+                                callback,
+                                onStreamStateChanged,
+                                JNI_TRUE,
+                                isMjpeg ? JNI_TRUE : JNI_FALSE,
+                                static_cast<jint>(ctx->active_width),
+                                static_cast<jint>(ctx->active_height),
+                                static_cast<jint>(fps)
+                            );
+                        }
+                        break;
+                    }
+
+                    case UVC_EVENT_STREAMOFF: {
+                        LOGI("UVC_EVENT_STREAMOFF");
+                        {
+                            std::lock_guard<std::mutex> slock(ctx->stream_mutex);
+                            stopV4l2StreamingLocked(ctx);
+                        }
+                        env->CallVoidMethod(callback, onStreamStateChanged, JNI_FALSE, JNI_TRUE, 0, 0, 0);
+                        break;
+                    }
+
+                    default:
+                        break;
+                }
+            }
+        }
+    }
+
+    LOGI("Exited UVC V4L2 event loop");
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_me_arianb_usb_1hid_1client_webcam_UvcNative_nativeClose(
+    JNIEnv* /* env */,
+    jobject /* thiz */
+) {
+    std::lock_guard<std::mutex> lock(g_ctx_mutex);
+    if (!g_ctx) return;
+
+    if (g_ctx->stop_efd >= 0) {
+        uint64_t val = 1;
+        (void)write(g_ctx->stop_efd, &val, sizeof(val));
+    }
+
+    {
+        std::lock_guard<std::mutex> slock(g_ctx->stream_mutex);
+        stopV4l2StreamingLocked(g_ctx);
+    }
+
+    if (g_ctx->v4l2_fd >= 0) {
+        close(g_ctx->v4l2_fd);
+        g_ctx->v4l2_fd = -1;
+    }
+    if (g_ctx->stop_efd >= 0) {
+        close(g_ctx->stop_efd);
+        g_ctx->stop_efd = -1;
+    }
+
+    delete g_ctx;
+    g_ctx = nullptr;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_me_arianb_usb_1hid_1client_webcam_UvcNative_nativePushMjpegFrame(
+    JNIEnv* env,
+    jobject /* thiz */,
+    jobject jDirectJpegBuf,
+    jint length
+) {
+    UvcContext* ctx = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_ctx_mutex);
+        ctx = g_ctx;
+    }
+    if (!ctx || !ctx->is_streaming.load() || length <= 0) {
+        return JNI_FALSE;
+    }
+
+    auto* srcPtr = static_cast<const uint8_t*>(env->GetDirectBufferAddress(jDirectJpegBuf));
+    if (!srcPtr) return JNI_FALSE;
+
+    std::lock_guard<std::mutex> slock(ctx->stream_mutex);
+    if (!ctx->is_streaming.load() || ctx->v4l2_fd < 0) return JNI_FALSE;
+
+    struct v4l2_buffer buf {};
+    buf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+    buf.memory = V4L2_MEMORY_MMAP;
+
+    if (ioctl(ctx->v4l2_fd, VIDIOC_DQBUF, &buf) < 0) {
+        return JNI_FALSE;
+    }
+
+    if (buf.index < ctx->num_buffers && ctx->buffers[buf.index].start != nullptr) {
+        size_t copyLen = static_cast<size_t>(length);
+        if (copyLen > ctx->buffers[buf.index].length) {
+            copyLen = ctx->buffers[buf.index].length;
+        }
+        memcpy(ctx->buffers[buf.index].start, srcPtr, copyLen);
+        buf.bytesused = static_cast<uint32_t>(copyLen);
+        buf.sequence = ctx->frame_sequence++;
+
+        struct timeval tv {};
+        gettimeofday(&tv, nullptr);
+        buf.timestamp = tv;
+        buf.flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
+
+        if (ioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf) == 0) {
+            return JNI_TRUE;
+        }
+    }
+
+    return JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_me_arianb_usb_1hid_1client_webcam_UvcNative_nativePushYuvToYuyvFrame(
+    JNIEnv* env,
+    jobject /* thiz */,
+    jobject yBuf,
+    jobject uBuf,
+    jobject vBuf,
+    jint srcW,
+    jint srcH,
+    jint yRowStride,
+    jint uvRowStride,
+    jint uvPixelStride,
+    jint rotation,
+    jboolean mirror
+) {
+    UvcContext* ctx = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_ctx_mutex);
+        ctx = g_ctx;
+    }
+    if (!ctx || !ctx->is_streaming.load()) {
+        return JNI_FALSE;
+    }
+
+    const auto* yPlane = static_cast<const uint8_t*>(env->GetDirectBufferAddress(yBuf));
+    const auto* uPlane = static_cast<const uint8_t*>(env->GetDirectBufferAddress(uBuf));
+    const auto* vPlane = static_cast<const uint8_t*>(env->GetDirectBufferAddress(vBuf));
+    if (!yPlane || !uPlane || !vPlane) return JNI_FALSE;
+
+    std::lock_guard<std::mutex> slock(ctx->stream_mutex);
+    if (!ctx->is_streaming.load() || ctx->v4l2_fd < 0) return JNI_FALSE;
+
+    struct v4l2_buffer buf {};
+    buf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+    buf.memory = V4L2_MEMORY_MMAP;
+    if (ioctl(ctx->v4l2_fd, VIDIOC_DQBUF, &buf) < 0) {
+        return JNI_FALSE;
+    }
+
+    if (buf.index >= ctx->num_buffers || !ctx->buffers[buf.index].start) {
+        return JNI_FALSE;
+    }
+
+    const int dstW = ctx->active_width;
+    const int dstH = ctx->active_height;
+    const size_t neededBytes = static_cast<size_t>(dstW) * dstH * 2u;
+    if (neededBytes > ctx->buffers[buf.index].length) {
+        ioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf);
+        return JNI_FALSE;
+    }
+
+    auto* dst = static_cast<uint8_t*>(ctx->buffers[buf.index].start);
+    const bool isIdentity = (rotation == 0 && !mirror && srcW == dstW && srcH == dstH);
+
+    if (isIdentity) {
+        // Fast path: identical dimensions, no rotation/mirror
+        for (int y = 0; y < dstH; ++y) {
+            const uint8_t* yRow = yPlane + y * yRowStride;
+            const uint8_t* uRow = uPlane + (y >> 1) * uvRowStride;
+            const uint8_t* vRow = vPlane + (y >> 1) * uvRowStride;
+            uint8_t* dstRow = dst + y * (dstW * 2);
+
+            for (int x = 0; x < dstW; x += 2) {
+                int uvOffset = (x >> 1) * uvPixelStride;
+                uint8_t u = uRow[uvOffset];
+                uint8_t v = vRow[uvOffset];
+                dstRow[x * 2 + 0] = yRow[x];
+                dstRow[x * 2 + 1] = u;
+                dstRow[x * 2 + 2] = yRow[x + 1];
+                dstRow[x * 2 + 3] = v;
+            }
+        }
+    } else {
+        for (int y = 0; y < dstH; ++y) {
+            uint8_t* dstRow = dst + y * (dstW * 2);
+            for (int x = 0; x < dstW; x += 2) {
+                int sx0, sy0, sx1, sy1;
+                mapDestToSrc(x, y, dstW, dstH, srcW, srcH, rotation, mirror == JNI_TRUE, sx0, sy0);
+                mapDestToSrc(x + 1, y, dstW, dstH, srcW, srcH, rotation, mirror == JNI_TRUE, sx1, sy1);
+
+                uint8_t y0 = yPlane[sy0 * yRowStride + sx0];
+                uint8_t y1 = yPlane[sy1 * yRowStride + sx1];
+                int uvIdx = (sy0 >> 1) * uvRowStride + (sx0 >> 1) * uvPixelStride;
+                uint8_t u = uPlane[uvIdx];
+                uint8_t v = vPlane[uvIdx];
+
+                dstRow[x * 2 + 0] = y0;
+                dstRow[x * 2 + 1] = u;
+                dstRow[x * 2 + 2] = y1;
+                dstRow[x * 2 + 3] = v;
+            }
+        }
+    }
+
+    buf.bytesused = static_cast<uint32_t>(neededBytes);
+    buf.sequence = ctx->frame_sequence++;
+    struct timeval tv {};
+    gettimeofday(&tv, nullptr);
+    buf.timestamp = tv;
+
+    return ioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf) == 0 ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_me_arianb_usb_1hid_1client_webcam_UvcNative_nativeYuv420ToNv21(
+    JNIEnv* env,
+    jobject /* thiz */,
+    jobject yBuf,
+    jobject uBuf,
+    jobject vBuf,
+    jint srcW,
+    jint srcH,
+    jint yRowStride,
+    jint uvRowStride,
+    jint uvPixelStride,
+    jint dstW,
+    jint dstH,
+    jint rotation,
+    jboolean mirror,
+    jbyteArray outNv21
+) {
+    const auto* yPlane = static_cast<const uint8_t*>(env->GetDirectBufferAddress(yBuf));
+    const auto* uPlane = static_cast<const uint8_t*>(env->GetDirectBufferAddress(uBuf));
+    const auto* vPlane = static_cast<const uint8_t*>(env->GetDirectBufferAddress(vBuf));
+    if (!yPlane || !uPlane || !vPlane) return;
+
+    auto* nv21 = static_cast<uint8_t*>(env->GetPrimitiveArrayCritical(outNv21, nullptr));
+    if (!nv21) return;
+
+    uint8_t* dstY = nv21;
+    uint8_t* dstVU = nv21 + (dstW * dstH);
+
+    const bool isIdentity = (rotation == 0 && !mirror && srcW == dstW && srcH == dstH);
+
+    if (isIdentity) {
+        // Ultra-fast memcpy/interleave path when Camera2 capture size matches UVC output size
+        if (yRowStride == dstW) {
+            memcpy(dstY, yPlane, static_cast<size_t>(dstW) * dstH);
+        } else {
+            for (int y = 0; y < dstH; ++y) {
+                memcpy(dstY + y * dstW, yPlane + y * yRowStride, dstW);
+            }
+        }
+
+        const int chromaH = dstH >> 1;
+        const int chromaW = dstW >> 1;
+        if (uvPixelStride == 2 && (vPlane + 1 == uPlane) && uvRowStride == dstW) {
+            // Already tightly packed NV21 in Camera2 buffer!
+            memcpy(dstVU, vPlane, static_cast<size_t>(dstW) * chromaH);
+        } else {
+            for (int cy = 0; cy < chromaH; ++cy) {
+                const uint8_t* uRow = uPlane + cy * uvRowStride;
+                const uint8_t* vRow = vPlane + cy * uvRowStride;
+                uint8_t* vuRow = dstVU + cy * dstW;
+                for (int cx = 0; cx < chromaW; ++cx) {
+                    int idx = cx * uvPixelStride;
+                    vuRow[cx * 2 + 0] = vRow[idx];
+                    vuRow[cx * 2 + 1] = uRow[idx];
+                }
+            }
+        }
+    } else {
+        // General path with rotation (0/90/180/270), mirror, and aspect-preserving crop/scale
+        for (int y = 0; y < dstH; ++y) {
+            uint8_t* yOutRow = dstY + y * dstW;
+            uint8_t* vuOutRow = (y & 1) == 0 ? (dstVU + (y >> 1) * dstW) : nullptr;
+
+            for (int x = 0; x < dstW; ++x) {
+                int sx, sy;
+                mapDestToSrc(x, y, dstW, dstH, srcW, srcH, rotation, mirror == JNI_TRUE, sx, sy);
+                yOutRow[x] = yPlane[sy * yRowStride + sx];
+
+                if (vuOutRow != nullptr && (x & 1) == 0) {
+                    int uvIdx = (sy >> 1) * uvRowStride + (sx >> 1) * uvPixelStride;
+                    vuOutRow[x + 0] = vPlane[uvIdx];
+                    vuOutRow[x + 1] = uPlane[uvIdx];
+                }
+            }
+        }
+    }
+
+    env->ReleasePrimitiveArrayCritical(outNv21, nv21, 0);
+}

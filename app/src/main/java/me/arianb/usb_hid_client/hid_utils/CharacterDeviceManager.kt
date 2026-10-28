@@ -2,6 +2,7 @@ package me.arianb.usb_hid_client.hid_utils
 
 import android.app.Application
 import android.content.Intent
+import android.os.Parcelable
 import com.topjohnwu.superuser.Shell
 import com.topjohnwu.superuser.ipc.RootService
 import kotlinx.coroutines.Dispatchers
@@ -9,9 +10,9 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.parcelize.Parcelize
 import me.arianb.usb_hid_client.settings.GadgetUserPreferences
 import me.arianb.usb_hid_client.shell_utils.RootStateHolder
 import timber.log.Timber
@@ -21,13 +22,12 @@ import kotlin.time.Duration.Companion.milliseconds
 
 class CharacterDeviceManager private constructor(private val application: Application) {
     private val rootStateHolder = RootStateHolder.getInstance()
-
     private val mConnection = UsbGadgetServiceConnection()
 
     @Throws(TimeoutCancellationException::class)
     private suspend fun ensureServiceIsBound(
         timeout: Duration = 5000.milliseconds,
-        pollInterval: Duration = 500.milliseconds
+        pollInterval: Duration = 250.milliseconds
     ) {
         if (!mConnection.isBound) {
             Intent(application, UsbGadgetService::class.java).also { intent ->
@@ -36,12 +36,11 @@ class CharacterDeviceManager private constructor(private val application: Applic
         }
 
         withTimeout(timeout) {
-            // wait until the service is bound before trying to use it
             while (!mConnection.isBound) {
                 Timber.d("not bound yet, sleeping for a bit before trying again...")
                 delay(pollInterval)
             }
-            Timber.d("service is bound now!!!")
+            Timber.d("UsbGadgetService is bound now!")
         }
     }
 
@@ -60,76 +59,102 @@ class CharacterDeviceManager private constructor(private val application: Applic
         }
     }
 
-    suspend fun createCharacterDevices(gadgetUserPreferences: GadgetUserPreferences) {
+    suspend fun createCharacterDevices(gadgetUserPreferences: GadgetUserPreferences): String? {
         useService {
             it.createGadget(gadgetUserPreferences)
         }
 
-        withContext(Dispatchers.IO) {
+        return withContext(Dispatchers.IO) {
             fixSelinuxPermissions()
 
-            launch {
-                for (devicePath in DevicePaths.all) {
-                    try {
-                        withTimeout(3000) {
-                            // wait until the device file exists before trying to fix its permissions
-                            while (!devicePath.exists()) {
-                                Timber.d("$devicePath doesn't exist yet, sleeping for a bit before trying again...")
-                                delay(200)
-                            }
-                            Timber.d("$devicePath exists now!!!")
+            var detectedNode: String? = null
+            try {
+                withTimeout(4000) {
+                    while (detectedNode == null) {
+                        detectedNode = discoverUvcVideoDevicePath(gadgetUserPreferences.uvcVideoDevicePath.path)
+                        if (detectedNode == null) {
+                            delay(200)
                         }
-                        fixCharacterDevicePermissions(devicePath)
-                    } catch (e: TimeoutCancellationException) {
-                        // FIXME: show this error to the user
-                        Timber.e("Timed out while waiting for character device '$devicePath' to be created.")
                     }
                 }
+            } catch (e: TimeoutCancellationException) {
+                Timber.e("Timed out waiting for UVC /dev/videoX character device to appear.")
+            }
+
+            val finalNode = detectedNode ?: gadgetUserPreferences.uvcVideoDevicePath.path.ifBlank { "/dev/video2" }
+            DevicePaths.setUvcDevicePath(UvcVideoDevicePath(finalNode))
+            if (File(finalNode).exists() || Shell.cmd("test -e $finalNode").exec().isSuccess) {
+                fixCharacterDevicePermissions(finalNode)
+                finalNode
+            } else {
+                null
             }
         }
     }
 
+    /**
+     * Scans /sys/class/video4linux/video* to find the V4L2 video output node created by the USB UVC gadget.
+     */
+    fun discoverUvcVideoDevicePath(preferredOverride: String = ""): String? {
+        if (preferredOverride.isNotBlank() && preferredOverride != AUTO_DETECT_VIDEO_PATH) {
+            if (Shell.cmd("test -e $preferredOverride").exec().isSuccess) {
+                return preferredOverride
+            }
+        }
+
+        // Find any video4linux node whose sysfs symlink points to usb_gadget / dwc3 / gadget
+        val findCmd = """
+            for v in /sys/class/video4linux/video*; do
+                [ -e "${'$'}v" ] || continue
+                link_target=${'$'}(readlink -f "${'$'}v" 2>/dev/null)
+                vname=${'$'}(cat "${'$'}v/name" 2>/dev/null)
+                case "${'$'}link_target ${'$'}vname" in
+                    *gadget*|*dwc3*|*udc*|*uvc*)
+                        echo "/dev/${'$'}(basename "${'$'}v")"
+                        exit 0
+                        ;;
+                esac
+            done
+        """.trimIndent()
+
+        val result = Shell.cmd(findCmd).exec()
+        val found = result.out.firstOrNull { it.startsWith("/dev/video") }?.trim()
+        if (!found.isNullOrEmpty()) {
+            Timber.i("Discovered UVC V4L2 node: $found")
+            DevicePaths.setUvcDevicePath(UvcVideoDevicePath(found))
+            return found
+        }
+        return null
+    }
+
     private fun fixSelinuxPermissions() {
-        val selinuxPolicyCommand = "${rootStateHolder.sepolicyCommand} '$SELINUX_POLICY'"
-        Shell.cmd(selinuxPolicyCommand).exec()
+        val sepolicyCmd = rootStateHolder.sepolicyCommand ?: return
+        for (policy in SELINUX_POLICIES) {
+            Shell.cmd("$sepolicyCmd '$policy'").exec()
+        }
     }
 
     fun fixCharacterDevicePermissions(device: DevicePath) = fixCharacterDevicePermissions(device.path)
 
     fun fixCharacterDevicePermissions(device: String) {
+        fixSelinuxPermissions()
+
         val appUID: Int = application.applicationInfo.uid
-
-        // Set Linux permissions -> only my app user can r/w to the char device
-        val chownCommand = "chown '${appUID}:${appUID}' $device"
-        val chmodCommand = "chmod 600 $device"
-        Shell.cmd(chownCommand).exec()
-        Shell.cmd(chmodCommand).exec()
-
-        // Set SELinux permissions -> only my app's selinux context can r/w to the char device
-        val chconCommand = "chcon 'u:object_r:device:s0:${getSelinuxCategories()}' $device"
-        Shell.cmd(chconCommand).exec()
-
-        return
+        Shell.cmd(
+            "chown '${appUID}:${appUID}' $device",
+            "chmod 660 $device",
+            "chcon 'u:object_r:device:s0:${getSelinuxCategories()}' $device"
+        ).exec()
     }
 
     private fun getSelinuxCategories(): String {
         val appDataDirPath: String = application.applicationInfo.dataDir
-
-        // Get selinux context for app
         val commandResult = Shell.cmd("stat -c %C $appDataDirPath").exec()
-
         val selinuxContextString = commandResult.out.joinToString(separator = "\n").trim()
-
-        // Get the part of the context that I need (categories) by grabbing everything after the last ':'
         val categories = selinuxContextString.substringAfterLast(':')
-
-        // If it hasn't changed, then the previous piece of code failed to get the substring
         if (categories == selinuxContextString) {
             Timber.wtf("Failed to get app's selinux context")
         }
-
-        Timber.d("context (before,after): (%s,%s)", selinuxContextString, categories)
-
         return categories
     }
 
@@ -141,68 +166,55 @@ class CharacterDeviceManager private constructor(private val application: Applic
 
     @ModifiesStateDirectly
     fun characterDeviceMissing(charDevicePath: DevicePath): Boolean {
-        val isCharDevMissing = if (!DevicePaths.all.contains(charDevicePath)) {
-            true
-        } else !charDevicePath.exists()
-
-        return isCharDevMissing
+        return !charDevicePath.exists()
     }
 
     @ModifiesStateDirectly
     fun anyCharacterDeviceMissing(): Boolean {
-        for (charDevicePath in DevicePaths.all) {
-            if (!charDevicePath.exists()) {
-                return true
-            }
+        val detected = discoverUvcVideoDevicePath()
+        if (detected != null) {
+            return false
         }
-
-        return false
+        return !DevicePaths.uvcVideoDevice.value.exists()
     }
 
     companion object {
+        const val AUTO_DETECT_VIDEO_PATH = "auto"
+
         object DevicePaths {
-            val DEFAULT_KEYBOARD_DEVICE_PATH = KeyboardDevicePath("/dev/hidg0")
-            val DEFAULT_TOUCHPAD_DEVICE_PATH = TouchpadDevicePath("/dev/hidg1")
+            val DEFAULT_UVC_DEVICE_PATH = UvcVideoDevicePath(AUTO_DETECT_VIDEO_PATH)
 
-            private val _keyboard = MutableStateFlow(DEFAULT_KEYBOARD_DEVICE_PATH)
-            private val _touchpad = MutableStateFlow(DEFAULT_TOUCHPAD_DEVICE_PATH)
+            private val _uvcVideoDevice = MutableStateFlow(UvcVideoDevicePath("/dev/video2"))
+            val uvcVideoDevice: StateFlow<UvcVideoDevicePath> = _uvcVideoDevice
 
-            val keyboard: StateFlow<KeyboardDevicePath> = _keyboard
-            val touchpad: StateFlow<TouchpadDevicePath> = _touchpad
+            fun setUvcDevicePath(path: UvcVideoDevicePath) {
+                _uvcVideoDevice.value = path
+            }
 
             val all: List<DevicePath>
-                get() = listOf(keyboard.value, touchpad.value)
+                get() = listOf(uvcVideoDevice.value)
         }
 
-        // SELinux stuff
-        private const val SELINUX_DOMAIN = "appdomain"
-        private const val SELINUX_POLICY = "allow $SELINUX_DOMAIN device chr_file { getattr open read write }"
+        // Allow app domain to open, read, write, ioctl, and mmap the V4L2 UVC character device
+        private val SELINUX_POLICIES = listOf(
+            "allow appdomain device chr_file { getattr open read write ioctl map }",
+            "allow appdomain video_device chr_file { getattr open read write ioctl map }",
+            "allow untrusted_app device chr_file { getattr open read write ioctl map }",
+            "allow untrusted_app video_device chr_file { getattr open read write ioctl map }",
+            "allow untrusted_app_all device chr_file { getattr open read write ioctl map }",
+            "allow untrusted_app_all video_device chr_file { getattr open read write ioctl map }"
+        )
 
         @Volatile
         private var INSTANCE: CharacterDeviceManager? = null
         fun getInstance(application: Application): CharacterDeviceManager {
             return INSTANCE ?: synchronized(this) {
-                INSTANCE?.let {
-                    return it
-                }
-
-                val instance = CharacterDeviceManager(application)
-                INSTANCE = instance
-                instance
+                INSTANCE ?: CharacterDeviceManager(application).also { INSTANCE = it }
             }
         }
     }
 }
 
-private fun logShellCommandResult(label: String, commandResult: Shell.Result) {
-    with(commandResult) {
-        Timber.i("${label}: \nexit code=%d\nstdout=%s\nstderr=%s", code, out, err)
-    }
-}
-
-// This annotation is to help me ensure that I don't accidentally bypass my ViewModel wrappers when calling certain
-// methods from inside ViewModel. For example, by calling CharacterDeviceManager.anyCharacterDeviceMissing directly without
-// updating the state at the call site.
 @Retention(value = AnnotationRetention.BINARY)
 @RequiresOptIn(
     level = RequiresOptIn.Level.ERROR,
@@ -213,11 +225,9 @@ annotation class ModifiesStateDirectly
 interface DevicePath {
     val path: String
 
-    fun exists(): Boolean = File(path).exists()
+    fun exists(): Boolean = path != CharacterDeviceManager.AUTO_DETECT_VIDEO_PATH && File(path).exists()
 }
 
 @JvmInline
-value class KeyboardDevicePath(override val path: String) : DevicePath
-
-@JvmInline
-value class TouchpadDevicePath(override val path: String) : DevicePath
+@Parcelize
+value class UvcVideoDevicePath(override val path: String) : DevicePath, Parcelable
