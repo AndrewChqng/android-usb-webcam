@@ -51,12 +51,12 @@ sealed class AppPreference(val preference: PreferenceKey<*>) {
         BooleanPreferenceKey("disable_gadget_functions_during_config", false)
 
     data object UvcMaxPacketSizePref : ObjectPreferenceKey<UvcMaxPacketOption>(
-        "uvc_max_packet_size", UvcMaxPacketOption.HighBandwidth3072,
+        "uvc_max_packet_size", UvcMaxPacketOption.Standard1024,
         fromStringPreference = {
             when (it) {
-                UvcMaxPacketOption.Standard1024.key -> UvcMaxPacketOption.Standard1024
+                UvcMaxPacketOption.HighBandwidth3072.key -> UvcMaxPacketOption.HighBandwidth3072
                 UvcMaxPacketOption.Medium2048.key -> UvcMaxPacketOption.Medium2048
-                else -> UvcMaxPacketOption.HighBandwidth3072
+                else -> UvcMaxPacketOption.Standard1024
             }
         },
         toStringPreference = { it.key }
@@ -105,7 +105,7 @@ data class GadgetUserPreferences(
     val uvcVideoDevicePath: UvcVideoDevicePath,
     val createNewGadgetForFunctions: Boolean,
     val disableGadgetFunctionsDuringConfiguration: Boolean,
-    val uvcMaxPacketSize: Int = 3072,
+    val uvcMaxPacketSize: Int = 1024,
 ) : Parcelable {
     companion object {
         fun fromUserPreferences(userPreferences: UserPreferences): GadgetUserPreferences {

@@ -110,6 +110,16 @@ internal class UsbGadgetManager(val gadgetUserPreferences: GadgetUserPreferences
     private val UVC_FUNCTION_PATH: Path = FUNCTIONS_PATH / UVC_FUNCTION_NAME
     private val BACKUP_STATE_FILE: Path = Path("/data/local/tmp/usb_webcam_saved_links.txt")
 
+    private fun execRoot(vararg commands: String): Boolean {
+        val proc = Runtime.getRuntime().exec(arrayOf("sh", "-c", commands.joinToString("\n")))
+        val exitCode = proc.waitFor()
+        if (exitCode != 0) {
+            val err = proc.errorStream.bufferedReader().readText().trim()
+            Timber.w("Root cmd exited with $exitCode: $err")
+        }
+        return exitCode == 0
+    }
+
     private data class UvcFrameConfig(
         val dirName: String,
         val width: Int,
@@ -125,7 +135,7 @@ internal class UsbGadgetManager(val gadgetUserPreferences: GadgetUserPreferences
 
     private val mjpegFrames = listOf(
         UvcFrameConfig(
-            dirName = "360p",
+            dirName = "f1_360p",
             width = 640,
             height = 360,
             defaultInterval = 333333,
@@ -134,7 +144,7 @@ internal class UsbGadgetManager(val gadgetUserPreferences: GadgetUserPreferences
             maxBitRate = 110_592_000L
         ),
         UvcFrameConfig(
-            dirName = "720p",
+            dirName = "f2_720p",
             width = 1280,
             height = 720,
             defaultInterval = 333333,
@@ -143,7 +153,7 @@ internal class UsbGadgetManager(val gadgetUserPreferences: GadgetUserPreferences
             maxBitRate = 221_184_000L
         ),
         UvcFrameConfig(
-            dirName = "1080p",
+            dirName = "f3_1080p",
             width = 1920,
             height = 1080,
             defaultInterval = 333333,
@@ -155,7 +165,7 @@ internal class UsbGadgetManager(val gadgetUserPreferences: GadgetUserPreferences
 
     private val uncompressedFrames = listOf(
         UvcFrameConfig(
-            dirName = "360p",
+            dirName = "f1_360p",
             width = 640,
             height = 360,
             defaultInterval = 333333,
@@ -164,7 +174,7 @@ internal class UsbGadgetManager(val gadgetUserPreferences: GadgetUserPreferences
             maxBitRate = 110_592_000L
         ),
         UvcFrameConfig(
-            dirName = "480p",
+            dirName = "f2_480p",
             width = 640,
             height = 480,
             defaultInterval = 333333,
@@ -173,7 +183,7 @@ internal class UsbGadgetManager(val gadgetUserPreferences: GadgetUserPreferences
             maxBitRate = 147_456_000L
         ),
         UvcFrameConfig(
-            dirName = "720p",
+            dirName = "f3_720p",
             width = 1280,
             height = 720,
             defaultInterval = 666666,
@@ -227,82 +237,139 @@ internal class UsbGadgetManager(val gadgetUserPreferences: GadgetUserPreferences
         } catch (e: IOException) {
             Timber.e(e, "Failed to disable USB gadget before UVC config")
         }
+        execRoot("rm -f ${USB_GADGET_PATH}/os_desc/b.1")
 
-        // Unlink all existing function symlinks in configs/b.1 so uvc.0 is not busy and MTP/ACM don't exhaust DWC3 FIFOs
-        currentLinks.forEach { (linkPath, _) ->
-            runCatching { linkPath.deleteIfExists() }
+        val keepAdb = !gadgetUserPreferences.disableGadgetFunctionsDuringConfiguration
+
+        // Unlink existing uvc symlinks (so uvc.0 is not EBUSY) and non-ADB symlinks (so MTP/ACM don't exhaust DWC3 FIFOs).
+        // Keep existing ffs.adb symlink intact when keepAdb is true so adbd's FunctionFS state stays FFS_ACTIVE!
+        var hasActiveAdbSymlink = false
+        for ((linkPath, targetPath) in currentLinks) {
+            val isAdb = targetPath.name == "ffs.adb"
+            if (keepAdb && isAdb) {
+                hasActiveAdbSymlink = true
+            } else {
+                runCatching { linkPath.deleteIfExists() }
+            }
         }
 
         // Configure UVC ConfigFS tree under /config/usb_gadget/g1/functions/uvc.0
+        val maxPacket = gadgetUserPreferences.uvcMaxPacketSize.coerceIn(1024, 3072)
         try {
-            configureUvcFunction()
+            configureUvcFunction(maxPacket)
         } catch (e: Exception) {
             Timber.e(e, "Error configuring UVC ConfigFS function")
         }
 
         // Configure IAD (Interface Association Descriptor) device class for clean composite UVC + ADB enumeration
-        runCatching {
-            (USB_GADGET_PATH / "bDeviceClass").writeText("0xef\n")
-            (USB_GADGET_PATH / "bDeviceSubClass").writeText("0x02\n")
-            (USB_GADGET_PATH / "bDeviceProtocol").writeText("0x01\n")
-        }
+        execRoot(
+            "echo 0xef > ${USB_GADGET_PATH}/bDeviceClass",
+            "echo 0x02 > ${USB_GADGET_PATH}/bDeviceSubClass",
+            "echo 0x01 > ${USB_GADGET_PATH}/bDeviceProtocol"
+        )
 
-        // Link uvc.0 (and optionally ffs.adb so ADB stays alive) into configs/b.1
+        // Link uvc.0 (and ffs.adb if not already linked) into configs/b.1
         try {
             CONFIGS_PATH.createDirectories()
-            val uvcLink = CONFIGS_PATH / "f1"
+            val uvcLink = CONFIGS_PATH / UVC_FUNCTION_NAME
             uvcLink.deleteIfExists()
-            uvcLink.createSymbolicLinkPointingTo(UVC_FUNCTION_PATH)
+            execRoot("ln -sf ${UVC_FUNCTION_PATH} ${uvcLink}")
 
-            val keepAdb = !gadgetUserPreferences.disableGadgetFunctionsDuringConfiguration
             val adbFuncPath = FUNCTIONS_PATH / "ffs.adb"
-            if (keepAdb && adbFuncPath.isDirectory()) {
-                val adbLink = CONFIGS_PATH / "f2"
+            if (keepAdb && !hasActiveAdbSymlink && adbFuncPath.isDirectory()) {
+                val adbLink = CONFIGS_PATH / "ffs.adb"
                 adbLink.deleteIfExists()
-                adbLink.createSymbolicLinkPointingTo(adbFuncPath)
-            }
-
-            runCatching {
-                val configStrPath = CONFIGS_PATH / "strings/0x409/configuration"
-                if (configStrPath.exists()) {
-                    configStrPath.writeText(if (keepAdb) "uvc_adb\n" else "uvc\n")
-                }
+                execRoot("ln -sf ${adbFuncPath} ${adbLink}")
             }
         } catch (e: Exception) {
             Timber.e(e, "Failed to link UVC function to config")
         }
 
-        try {
+        // Enable gadget; if 3072 maxpacket fails DWC3 FIFO allocation, fallback to 1024 automatically
+        var boundOk = tryEnableGadget()
+        if (!boundOk && maxPacket > 1024) {
+            Timber.w("UDC bind with maxpacket=$maxPacket failed; retrying with 1024")
+            runCatching {
+                (CONFIGS_PATH / UVC_FUNCTION_NAME).deleteIfExists()
+                execRoot(
+                    "echo 1024 > ${UVC_FUNCTION_PATH}/streaming_maxpacket",
+                    "echo 0 > ${UVC_FUNCTION_PATH}/streaming_maxburst",
+                    "ln -sf ${UVC_FUNCTION_PATH} ${CONFIGS_PATH}/${UVC_FUNCTION_NAME}"
+                )
+            }
+            boundOk = tryEnableGadget()
+        }
+
+        if (!boundOk) {
+            Timber.e("UDC failed to bind with UVC; rolling back to original USB config so ADB is not lost")
+            deleteCharacterDevices()
+        }
+    }
+
+    private fun tryEnableGadget(): Boolean {
+        return try {
             enableGadget()
+            val boundUdc = runCatching { UDC_PATH.readText().trim() }.getOrDefault("")
+            Timber.i("Bound UDC after enableGadget(): '$boundUdc'")
+            boundUdc.isNotEmpty() && boundUdc != "none"
         } catch (e: IOException) {
-            Timber.e(e, "Failed to enable USB gadget after UVC config")
+            Timber.e(e, "Failed to enable USB gadget")
+            false
         }
     }
 
     private fun cleanExistingUvcSymlinks(uvcPath: Path) {
-        val symlinksToDelete = listOf(
-            uvcPath / "streaming/class/fs/h",
-            uvcPath / "streaming/class/hs/h",
-            uvcPath / "streaming/class/ss/h",
-            uvcPath / "streaming/header/h/m",
-            uvcPath / "streaming/header/h/u",
-            uvcPath / "streaming/header/h/h",
-            uvcPath / "control/class/fs/h",
-            uvcPath / "control/class/ss/h"
+        // 1. Delete all symlinks in streaming/class/{fs,hs,ss} and control/class/{fs,ss}
+        val classDirs = listOf(
+            uvcPath / "streaming/class/fs",
+            uvcPath / "streaming/class/hs",
+            uvcPath / "streaming/class/ss",
+            uvcPath / "control/class/fs",
+            uvcPath / "control/class/ss"
         )
-        symlinksToDelete.forEach { link ->
-            runCatching { link.deleteIfExists() }
+        for (dir in classDirs) {
+            runCatching {
+                if (dir.isDirectory()) {
+                    dir.listDirectoryEntries().filter { it.isSymbolicLink() }.forEach { it.deleteIfExists() }
+                }
+            }
+        }
+
+        // 2. Delete all symlinks in streaming/header/*
+        val streamHeaderRoot = uvcPath / "streaming/header"
+        runCatching {
+            if (streamHeaderRoot.isDirectory()) {
+                for (hdr in streamHeaderRoot.listDirectoryEntries().filter { it.isDirectory() }) {
+                    hdr.listDirectoryEntries().filter { it.isSymbolicLink() }.forEach { it.deleteIfExists() }
+                }
+            }
+        }
+
+        // 3. Delete any pre-existing frame directories in streaming/mjpeg/* and streaming/uncompressed/*
+        val formatRoots = listOf(
+            uvcPath / "streaming/mjpeg",
+            uvcPath / "streaming/uncompressed"
+        )
+        for (fmtRoot in formatRoots) {
+            runCatching {
+                if (fmtRoot.isDirectory()) {
+                    for (fmtDir in fmtRoot.listDirectoryEntries().filter { it.isDirectory() }) {
+                        for (frameDir in fmtDir.listDirectoryEntries().filter { it.isDirectory() }) {
+                            frameDir.deleteIfExists()
+                        }
+                    }
+                }
+            }
         }
     }
 
     @Throws(IOException::class)
-    private fun configureUvcFunction() {
+    private fun configureUvcFunction(maxPacket: Int) {
         UVC_FUNCTION_PATH.createDirectories()
         cleanExistingUvcSymlinks(UVC_FUNCTION_PATH)
 
-        val maxPacket = gadgetUserPreferences.uvcMaxPacketSize.coerceIn(1024, 3072)
         runCatching { (UVC_FUNCTION_PATH / "streaming_maxpacket").writeText("$maxPacket\n") }
-        runCatching { (UVC_FUNCTION_PATH / "streaming_maxburst").writeText("1\n") }
+        runCatching { (UVC_FUNCTION_PATH / "streaming_maxburst").writeText("0\n") }
         runCatching { (UVC_FUNCTION_PATH / "streaming_interval").writeText("1\n") }
 
         // Control descriptors
@@ -339,14 +406,14 @@ internal class UsbGadgetManager(val gadgetUserPreferences: GadgetUserPreferences
 
     private fun configureFrameDir(frameDir: Path, cfg: UvcFrameConfig) {
         frameDir.createDirectories()
-        (frameDir / "wWidth").writeText("${cfg.width}\n")
-        (frameDir / "wHeight").writeText("${cfg.height}\n")
-        (frameDir / "dwMinBitRate").writeText("${cfg.minBitRate}\n")
-        (frameDir / "dwMaxBitRate").writeText("${cfg.maxBitRate}\n")
-        (frameDir / "dwMaxVideoFrameBufferSize").writeText("${cfg.maxFrameBufferSize}\n")
-        (frameDir / "dwDefaultFrameInterval").writeText("${cfg.defaultInterval}\n")
+        runCatching { (frameDir / "wWidth").writeText("${cfg.width}\n") }
+        runCatching { (frameDir / "wHeight").writeText("${cfg.height}\n") }
+        runCatching { (frameDir / "dwMinBitRate").writeText("${cfg.minBitRate}\n") }
+        runCatching { (frameDir / "dwMaxBitRate").writeText("${cfg.maxBitRate}\n") }
+        runCatching { (frameDir / "dwMaxVideoFrameBufferSize").writeText("${cfg.maxFrameBufferSize}\n") }
+        runCatching { (frameDir / "dwDefaultFrameInterval").writeText("${cfg.defaultInterval}\n") }
         val intervalsText = cfg.intervals.joinToString(separator = "\n", postfix = "\n")
-        (frameDir / "dwFrameInterval").writeText(intervalsText)
+        runCatching { (frameDir / "dwFrameInterval").writeText(intervalsText) }
     }
 
     private fun createSymlinkSafe(link: Path, target: Path) {
@@ -388,15 +455,18 @@ internal class UsbGadgetManager(val gadgetUserPreferences: GadgetUserPreferences
             Timber.w(e, "Failed to disable USB gadget during UVC teardown")
         }
 
-        // Remove current symlinks in configs/b.1
-        getCurrentConfigSymlinks().forEach { (linkPath, _) ->
-            runCatching { linkPath.deleteIfExists() }
+        // Remove UVC symlinks in configs/b.1; keep ffs.adb intact while restoring others
+        val existingLinks = getCurrentConfigSymlinks()
+        existingLinks.forEach { (linkPath, targetPath) ->
+            if (targetPath.name != "ffs.adb") {
+                runCatching { linkPath.deleteIfExists() }
+            }
         }
 
         cleanExistingUvcSymlinks(UVC_FUNCTION_PATH)
 
         // Restore saved original links (or fallback to ffs.adb)
-        var restoredAny = false
+        var restoredAny = getCurrentConfigSymlinks().isNotEmpty()
         if (BACKUP_STATE_FILE.exists()) {
             runCatching {
                 val lines = BACKUP_STATE_FILE.readLines()
@@ -409,8 +479,7 @@ internal class UsbGadgetManager(val gadgetUserPreferences: GadgetUserPreferences
                     } else if (parts.size == 3 && parts[0] == "LINK") {
                         val linkPath = Path(parts[1])
                         val targetPath = Path(parts[2])
-                        if (targetPath.exists()) {
-                            linkPath.deleteIfExists()
+                        if (targetPath.exists() && !linkPath.exists()) {
                             linkPath.createSymbolicLinkPointingTo(targetPath)
                             restoredAny = true
                         }
@@ -440,17 +509,16 @@ internal class UsbGadgetManager(val gadgetUserPreferences: GadgetUserPreferences
 
     @Throws(IOException::class)
     private fun disableGadget() {
-        UDC_PATH.writer(options = arrayOf(StandardOpenOption.SYNC)).use {
-            it.write("\n")
-        }
+        val currentUdc = runCatching { UDC_PATH.readText().trim() }.getOrDefault("")
+        if (currentUdc.isEmpty() || currentUdc == "none") return
+
+        execRoot("echo '' > $UDC_PATH")
     }
 
     @Throws(IOException::class)
     private fun enableGadget() {
         val udc = getUDC()
-        UDC_PATH.writer(options = arrayOf(StandardOpenOption.SYNC)).use {
-            it.write(udc)
-        }
+        execRoot("echo '$udc' > $UDC_PATH")
     }
 
     @Throws(IOException::class)

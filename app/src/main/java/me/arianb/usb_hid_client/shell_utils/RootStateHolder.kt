@@ -22,6 +22,9 @@ class RootStateHolder private constructor() {
     private val _uiState = MutableStateFlow(RootState())
     val uiState = _uiState.asStateFlow()
 
+    @Volatile
+    private var cachedRootMethod: RootMethod? = null
+
     private val sepolicyMap: Map<RootMethod, String?> = buildMap {
         put(RootMethod.UNKNOWN, null)
         put(RootMethod.UNROOTED, null)
@@ -43,21 +46,30 @@ class RootStateHolder private constructor() {
         }
 
     fun hasRootPermissions(): Boolean {
-        val hasRootPermissions = Shell.getShell().isRoot
+        val hasRootPermissions = runCatching { Shell.getShell().isRoot }.getOrDefault(false)
         _uiState.update { it.copy(missingRootPrivileges = !hasRootPermissions) }
         return hasRootPermissions
     }
 
     fun detectRootMethod(): RootMethod {
+        cachedRootMethod?.let { cached ->
+            if (cached != RootMethod.UNKNOWN && cached != RootMethod.UNROOTED) {
+                return cached
+            }
+        }
+
         if (!hasRootPermissions()) {
             Timber.i("Failed to get root shell. Device is most likely not rooted or hasn't given the app root permissions")
             return RootMethod.UNROOTED
         }
 
         for ((binary, matchingRootMethod) in rootBinaryMap) {
-            val commandResult = Shell.cmd("type $binary").exec()
-            if (commandResult.code == 0) {
+            val isSuccess = runCatching {
+                Shell.cmd("command -v $binary >/dev/null 2>&1").exec().code == 0
+            }.getOrDefault(false)
+            if (isSuccess) {
                 Timber.i("Detected root method as: %s", matchingRootMethod)
+                cachedRootMethod = matchingRootMethod
                 return matchingRootMethod
             }
         }

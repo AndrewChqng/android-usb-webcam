@@ -224,25 +224,30 @@ bool startV4l2StreamingLocked(UvcContext* ctx) {
         ctx->buffers[i].start = ptr;
         ctx->buffers[i].length = buf.length;
         ctx->buffers[i].queued = false;
+    }
 
-        // Pre-fill initial buffer with valid black frame and queue so host gets immediate data on STREAMON
+    // Queue a single initial dummy frame on buffer 0 so the host gets an immediate payload on STREAMON,
+    // leaving buffers 1..N-1 free for Camera2 frames to queue immediately without waiting for VIDIOC_DQBUF!
+    if (ctx->num_buffers > 0) {
+        struct v4l2_buffer buf {};
+        buf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+        buf.memory = V4L2_MEMORY_MMAP;
+        buf.index = 0;
         if (ctx->active_fourcc == V4L2_PIX_FMT_MJPEG) {
-            memcpy(ptr, kTinyBlackJpeg, sizeof(kTinyBlackJpeg));
+            memcpy(ctx->buffers[0].start, kTinyBlackJpeg, sizeof(kTinyBlackJpeg));
             buf.bytesused = sizeof(kTinyBlackJpeg);
         } else {
-            // Black in YUYV is Y=0x00, U=0x80, V=0x80
-            uint8_t* p = static_cast<uint8_t*>(ptr);
+            uint8_t* p = static_cast<uint8_t*>(ctx->buffers[0].start);
             size_t frameBytes = static_cast<size_t>(ctx->active_width) * ctx->active_height * 2u;
-            if (frameBytes > buf.length) frameBytes = buf.length;
+            if (frameBytes > ctx->buffers[0].length) frameBytes = ctx->buffers[0].length;
             for (size_t j = 0; j + 1 < frameBytes; j += 2) {
                 p[j] = 0x00;
                 p[j + 1] = 0x80;
             }
             buf.bytesused = static_cast<uint32_t>(frameBytes);
         }
-
         if (ioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf) == 0) {
-            ctx->buffers[i].queued = true;
+            ctx->buffers[0].queued = true;
         }
     }
 
@@ -271,12 +276,17 @@ void handleUvcSetupEvent(UvcContext* ctx, const struct usb_ctrlrequest& ctrl, st
         return;
     }
 
-    const uint8_t intf = ctrl.wIndex & 0xff;
     const uint8_t entityId = (ctrl.wIndex >> 8) & 0xff;
     const uint8_t cs = (ctrl.wValue >> 8) & 0xff;
 
-    // VideoControl interface (entity 0 or camera/processing unit queries)
-    if (intf == 0 || (entityId != 0)) {
+    // Distinguish VideoStreaming Probe/Commit requests from VideoControl requests
+    // regardless of which USB interface number uvc.0 is assigned in a composite gadget.
+    const bool isStreamingProbeOrCommit =
+        (entityId == 0) &&
+        (cs == UVC_VS_PROBE_CONTROL || cs == UVC_VS_COMMIT_CONTROL) &&
+        !(ctrl.bRequest == UVC_GET_CUR && ctrl.wLength == 1);
+
+    if (!isStreamingProbeOrCommit) {
         if (cs == UVC_VC_REQUEST_ERROR_CODE_CONTROL) {
             resp.data[0] = 0x06; // Invalid control
             resp.length = 1;
@@ -297,11 +307,6 @@ void handleUvcSetupEvent(UvcContext* ctx, const struct usb_ctrlrequest& ctrl, st
                     break;
             }
         }
-        return;
-    }
-
-    // VideoStreaming interface (VS_PROBE_CONTROL = 1, VS_COMMIT_CONTROL = 2)
-    if (cs != UVC_VS_PROBE_CONTROL && cs != UVC_VS_COMMIT_CONTROL) {
         return;
     }
 
@@ -662,6 +667,34 @@ Java_me_arianb_usb_1hid_1client_webcam_UvcNative_nativeClose(
     g_ctx = nullptr;
 }
 
+int acquireWritableBufferLocked(UvcContext* ctx, struct v4l2_buffer& buf) {
+    // First drain any completed buffers from the driver
+    while (true) {
+        struct v4l2_buffer dq {};
+        dq.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+        dq.memory = V4L2_MEMORY_MMAP;
+        if (ioctl(ctx->v4l2_fd, VIDIOC_DQBUF, &dq) == 0) {
+            if (dq.index < ctx->num_buffers) {
+                ctx->buffers[dq.index].queued = false;
+            }
+        } else {
+            break;
+        }
+    }
+
+    // Find an unqueued buffer
+    for (uint32_t i = 0; i < ctx->num_buffers; ++i) {
+        if (!ctx->buffers[i].queued && ctx->buffers[i].start != nullptr) {
+            memset(&buf, 0, sizeof(buf));
+            buf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+            buf.memory = V4L2_MEMORY_MMAP;
+            buf.index = i;
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_me_arianb_usb_1hid_1client_webcam_UvcNative_nativePushMjpegFrame(
     JNIEnv* env,
@@ -685,30 +718,31 @@ Java_me_arianb_usb_1hid_1client_webcam_UvcNative_nativePushMjpegFrame(
     if (!ctx->is_streaming.load() || ctx->v4l2_fd < 0) return JNI_FALSE;
 
     struct v4l2_buffer buf {};
-    buf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
-    buf.memory = V4L2_MEMORY_MMAP;
-
-    if (ioctl(ctx->v4l2_fd, VIDIOC_DQBUF, &buf) < 0) {
+    int idx = acquireWritableBufferLocked(ctx, buf);
+    if (idx < 0) {
         return JNI_FALSE;
     }
 
-    if (buf.index < ctx->num_buffers && ctx->buffers[buf.index].start != nullptr) {
-        size_t copyLen = static_cast<size_t>(length);
-        if (copyLen > ctx->buffers[buf.index].length) {
-            copyLen = ctx->buffers[buf.index].length;
-        }
-        memcpy(ctx->buffers[buf.index].start, srcPtr, copyLen);
-        buf.bytesused = static_cast<uint32_t>(copyLen);
-        buf.sequence = ctx->frame_sequence++;
+    size_t copyLen = static_cast<size_t>(length);
+    if (copyLen > ctx->buffers[idx].length) {
+        copyLen = ctx->buffers[idx].length;
+    }
+    memcpy(ctx->buffers[idx].start, srcPtr, copyLen);
+    buf.bytesused = static_cast<uint32_t>(copyLen);
+    buf.sequence = ctx->frame_sequence++;
 
-        struct timeval tv {};
-        gettimeofday(&tv, nullptr);
-        buf.timestamp = tv;
-        buf.flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
+    struct timeval tv {};
+    gettimeofday(&tv, nullptr);
+    buf.timestamp = tv;
 
-        if (ioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf) == 0) {
-            return JNI_TRUE;
+    if (ioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf) == 0) {
+        ctx->buffers[idx].queued = true;
+        if ((buf.sequence % 30) == 1) {
+            LOGI("Queued MJPEG frame #%u (%zu bytes) to V4L2 buf[%d]", buf.sequence, copyLen, idx);
         }
+        return JNI_TRUE;
+    } else {
+        LOGE("VIDIOC_QBUF failed: %s (errno=%d)", strerror(errno), errno);
     }
 
     return JNI_FALSE;
@@ -747,25 +781,19 @@ Java_me_arianb_usb_1hid_1client_webcam_UvcNative_nativePushYuvToYuyvFrame(
     if (!ctx->is_streaming.load() || ctx->v4l2_fd < 0) return JNI_FALSE;
 
     struct v4l2_buffer buf {};
-    buf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
-    buf.memory = V4L2_MEMORY_MMAP;
-    if (ioctl(ctx->v4l2_fd, VIDIOC_DQBUF, &buf) < 0) {
-        return JNI_FALSE;
-    }
-
-    if (buf.index >= ctx->num_buffers || !ctx->buffers[buf.index].start) {
+    int idx = acquireWritableBufferLocked(ctx, buf);
+    if (idx < 0) {
         return JNI_FALSE;
     }
 
     const int dstW = ctx->active_width;
     const int dstH = ctx->active_height;
     const size_t neededBytes = static_cast<size_t>(dstW) * dstH * 2u;
-    if (neededBytes > ctx->buffers[buf.index].length) {
-        ioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf);
+    if (neededBytes > ctx->buffers[idx].length) {
         return JNI_FALSE;
     }
 
-    auto* dst = static_cast<uint8_t*>(ctx->buffers[buf.index].start);
+    auto* dst = static_cast<uint8_t*>(ctx->buffers[idx].start);
     const bool isIdentity = (rotation == 0 && !mirror && srcW == dstW && srcH == dstH);
 
     if (isIdentity) {
@@ -814,7 +842,11 @@ Java_me_arianb_usb_1hid_1client_webcam_UvcNative_nativePushYuvToYuyvFrame(
     gettimeofday(&tv, nullptr);
     buf.timestamp = tv;
 
-    return ioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf) == 0 ? JNI_TRUE : JNI_FALSE;
+    if (ioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf) == 0) {
+        ctx->buffers[idx].queued = true;
+        return JNI_TRUE;
+    }
+    return JNI_FALSE;
 }
 
 extern "C" JNIEXPORT void JNICALL

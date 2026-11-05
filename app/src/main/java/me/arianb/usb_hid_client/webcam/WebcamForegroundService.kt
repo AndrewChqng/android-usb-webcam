@@ -38,9 +38,10 @@ class WebcamForegroundService : Service() {
                 startForegroundWithNotification(videoDevicePath)
                 acquireWakeLock()
                 WebcamController.getInstance(application).startUvcSession(videoDevicePath, maxPayload)
+                return START_REDELIVER_INTENT
             }
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     private fun startForegroundWithNotification(videoDevicePath: String) {
