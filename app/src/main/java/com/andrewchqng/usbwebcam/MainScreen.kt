@@ -142,15 +142,18 @@ fun MainPage(
                 val streamSummary = if (webcamState.isHostStreaming) {
                     String.format(
                         Locale.US,
-                        "Streaming %s %dx%d @ %dfps (%.1f fps actual)",
+                        "Streaming %s %dx%d @ %dfps • %.1f fps actual (%.1f ms/frame, %.1f KB, %dB pkt)",
                         webcamState.negotiatedFormat,
                         webcamState.negotiatedWidth,
                         webcamState.negotiatedHeight,
                         webcamState.negotiatedFps,
-                        webcamState.measuredFps
+                        webcamState.measuredFps,
+                        webcamState.avgEncodeTimeMs,
+                        webcamState.avgFrameSizeKb,
+                        webcamState.boundMaxPacket
                     )
                 } else if (webcamState.isUvcLoopRunning) {
-                    "Waiting for USB host application to open webcam..."
+                    "Waiting for USB host application to open webcam... (USB pkt: ${webcamState.boundMaxPacket}B)"
                 } else {
                     "Press Start to expose USB Video Class (UVC) webcam to host PC."
                 }
@@ -286,6 +289,138 @@ fun MainPage(
                     value = webcamState.jpegQuality.toFloat(),
                     onValueChange = { mainViewModel.setJpegQuality(it.toInt()) },
                     valueRange = 50f..95f
+                )
+
+                Text(
+                    text = "Target FPS Cap",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    val fpsOptions = listOf(0 to "Auto (Host)", 60 to "60 FPS", 30 to "30 FPS", 15 to "15 FPS")
+                    for ((cap, label) in fpsOptions) {
+                        FilterChip(
+                            selected = webcamState.targetFpsCap == cap,
+                            onClick = { mainViewModel.setTargetFpsCap(cap) },
+                            label = { Text(label) }
+                        )
+                    }
+                }
+
+                Text(
+                    text = "V4L2 Ring Queue Mode (Anti-Tearing / Latency)",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    val queueModes = listOf(
+                        1 to "Ultra-Low Latency (1 buf)",
+                        2 to "Tear-Free Balanced (2 bufs)",
+                        3 to "Max Smoothness (3 bufs)"
+                    )
+                    for ((bufs, label) in queueModes) {
+                        FilterChip(
+                            selected = webcamState.maxInFlightBuffers == bufs,
+                            onClick = { mainViewModel.setMaxInFlightBuffers(bufs) },
+                            label = { Text(label) }
+                        )
+                    }
+                }
+            }
+        }
+
+        // Camera2 ISP, Focus, Zoom & Exposure Card
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "Camera2 ISP, Focus & Exposure",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Continuous Autofocus", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Turn off to lock focus at infinity/hyperfocal and prevent focus breathing.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Switch(
+                        checked = webcamState.autoFocusEnabled,
+                        onCheckedChange = { mainViewModel.setAutoFocusEnabled(it) }
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Lock Constant Framerate (AE Priority)", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Keeps shutter speed fast so indoor lighting never drops FPS below target.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Switch(
+                        checked = webcamState.lockConstantFps,
+                        onCheckedChange = { mainViewModel.setLockConstantFps(it) }
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Video Stabilization (EIS)", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Keep off for minimum frame latency on a tripod/desk mount.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Switch(
+                        checked = webcamState.videoStabilization,
+                        onCheckedChange = { mainViewModel.setVideoStabilization(it) }
+                    )
+                }
+
+                Text(
+                    text = String.format(Locale.US, "Digital Zoom: %.1fx", webcamState.zoomRatio),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Slider(
+                    value = webcamState.zoomRatio,
+                    onValueChange = { mainViewModel.setZoomRatio(it) },
+                    valueRange = 1.0f..4.0f
+                )
+
+                Text(
+                    text = String.format(Locale.US, "Exposure Compensation: %+.1f EV", webcamState.exposureEv),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Slider(
+                    value = webcamState.exposureEv,
+                    onValueChange = { mainViewModel.setExposureEv(it) },
+                    valueRange = -2.0f..2.0f
                 )
             }
         }

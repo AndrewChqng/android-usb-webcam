@@ -12,8 +12,10 @@ import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.media.ImageReader
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Process
 import android.util.Range
 import android.util.Size
 import android.view.Surface
@@ -30,13 +32,15 @@ import timber.log.Timber
 import java.io.OutputStream
 import java.nio.ByteBuffer
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 data class CameraLensInfo(
     val cameraId: String,
     val label: String,
     val isFrontFacing: Boolean,
     val sensorOrientation: Int,
-    val focalLengthMm: Float
+    val focalLengthMm: Float,
+    val maxZoom: Float = 4.0f
 )
 
 data class WebcamStreamState(
@@ -50,11 +54,21 @@ data class WebcamStreamState(
     val negotiatedHeight: Int = 720,
     val negotiatedFps: Int = 30,
     val measuredFps: Float = 0f,
+    val avgEncodeTimeMs: Float = 0f,
+    val avgFrameSizeKb: Float = 0f,
+    val boundMaxPacket: Int = 1024,
     val selectedCameraId: String = "0",
     val availableCameras: List<CameraLensInfo> = emptyList(),
     val rotationDegrees: Int = 0,
     val mirrorHorizontal: Boolean = false,
-    val jpegQuality: Int = 85,
+    val jpegQuality: Int = 82,
+    val maxInFlightBuffers: Int = 2,
+    val targetFpsCap: Int = 0, // 0 = Auto (Host negotiated), or 60 / 30 / 15
+    val autoFocusEnabled: Boolean = true,
+    val lockConstantFps: Boolean = true,
+    val videoStabilization: Boolean = false,
+    val zoomRatio: Float = 1.0f,
+    val exposureEv: Float = 0.0f,
     val isPreviewEnabled: Boolean = false,
     val lastError: String? = null
 )
@@ -106,9 +120,12 @@ class WebcamController private constructor(private val application: Application)
     private val directJpegBuffer: ByteBuffer = ByteBuffer.allocateDirect(1920 * 1080 * 2)
     private val jpegOutputStream = DirectByteBufferOutputStream(directJpegBuffer)
 
-    // FPS tracking
+    // Telemetry & pacing state
     private var frameCountWindow = 0
+    private var encodeTimeSumNs = 0L
+    private var frameBytesSum = 0L
     private var lastFpsTimestampNs = 0L
+    private var lastSubmittedFrameNs = 0L
 
     init {
         refreshCameraList()
@@ -128,6 +145,8 @@ class WebcamController private constructor(private val application: Application)
                 val orientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
                 val focalLengths = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
                 val focal = focalLengths?.firstOrNull() ?: 0f
+                val maxDigitalZoom = (chars.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 4.0f)
+                    .coerceIn(1.0f, 8.0f)
 
                 val facingLabel = when (facing) {
                     CameraCharacteristics.LENS_FACING_FRONT -> "Front"
@@ -142,7 +161,8 @@ class WebcamController private constructor(private val application: Application)
                         label = "$facingLabel #$id$focalStr",
                         isFrontFacing = isFront,
                         sensorOrientation = orientation,
-                        focalLengthMm = focal
+                        focalLengthMm = focal,
+                        maxZoom = maxDigitalZoom
                     )
                 )
             }
@@ -160,7 +180,7 @@ class WebcamController private constructor(private val application: Application)
         }
     }
 
-    fun startUvcSession(videoDevicePath: String, maxPayloadSize: Int = 3072): Boolean {
+    fun startUvcSession(videoDevicePath: String, maxPayloadSize: Int = 1024): Boolean {
         stopUvcSession()
 
         val fdOrErr = UvcNative.nativeOpen(videoDevicePath, maxPayloadSize)
@@ -182,6 +202,7 @@ class WebcamController private constructor(private val application: Application)
                 isGadgetActive = true,
                 videoNodePath = videoDevicePath,
                 isUvcLoopRunning = true,
+                boundMaxPacket = maxPayloadSize,
                 lastError = null
             )
         }
@@ -197,13 +218,14 @@ class WebcamController private constructor(private val application: Application)
                         isHostStreaming = false,
                         isHostConnected = false,
                         negotiatedFormat = "Idle",
-                        measuredFps = 0f
+                        measuredFps = 0f,
+                        avgEncodeTimeMs = 0f,
+                        avgFrameSizeKb = 0f
                     )
                 }
             }
         }
 
-        // If preview is enabled even before host starts streaming, open camera for preview
         if (_state.value.isPreviewEnabled && previewSurface != null) {
             restartCameraIfNeeded()
         }
@@ -223,7 +245,9 @@ class WebcamController private constructor(private val application: Application)
                 isHostConnected = false,
                 isHostStreaming = false,
                 negotiatedFormat = "Idle",
-                measuredFps = 0f
+                measuredFps = 0f,
+                avgEncodeTimeMs = 0f,
+                avgFrameSizeKb = 0f
             )
         }
     }
@@ -253,7 +277,9 @@ class WebcamController private constructor(private val application: Application)
                 it.copy(
                     isHostStreaming = false,
                     negotiatedFormat = "Idle",
-                    measuredFps = 0f
+                    measuredFps = 0f,
+                    avgEncodeTimeMs = 0f,
+                    avgFrameSizeKb = 0f
                 )
             }
             if (!_state.value.isPreviewEnabled || previewSurface == null) {
@@ -264,7 +290,7 @@ class WebcamController private constructor(private val application: Application)
 
     fun selectCamera(cameraId: String) {
         if (_state.value.selectedCameraId == cameraId) return
-        _state.update { it.copy(selectedCameraId = cameraId) }
+        _state.update { it.copy(selectedCameraId = cameraId, zoomRatio = 1.0f) }
         restartCameraIfNeeded()
     }
 
@@ -279,6 +305,46 @@ class WebcamController private constructor(private val application: Application)
 
     fun setJpegQuality(quality: Int) {
         _state.update { it.copy(jpegQuality = quality.coerceIn(50, 98)) }
+    }
+
+    fun setMaxInFlightBuffers(count: Int) {
+        _state.update { it.copy(maxInFlightBuffers = count.coerceIn(1, 4)) }
+    }
+
+    fun setTargetFpsCap(fpsCap: Int) {
+        if (_state.value.targetFpsCap == fpsCap) return
+        _state.update { it.copy(targetFpsCap = fpsCap) }
+        updateRepeatingRequestOnFly()
+    }
+
+    fun setAutoFocusEnabled(enabled: Boolean) {
+        if (_state.value.autoFocusEnabled == enabled) return
+        _state.update { it.copy(autoFocusEnabled = enabled) }
+        updateRepeatingRequestOnFly()
+    }
+
+    fun setLockConstantFps(locked: Boolean) {
+        if (_state.value.lockConstantFps == locked) return
+        _state.update { it.copy(lockConstantFps = locked) }
+        updateRepeatingRequestOnFly()
+    }
+
+    fun setVideoStabilization(enabled: Boolean) {
+        if (_state.value.videoStabilization == enabled) return
+        _state.update { it.copy(videoStabilization = enabled) }
+        updateRepeatingRequestOnFly()
+    }
+
+    fun setZoomRatio(zoom: Float) {
+        val clamped = zoom.coerceIn(1.0f, 4.0f)
+        _state.update { it.copy(zoomRatio = clamped) }
+        updateRepeatingRequestOnFly()
+    }
+
+    fun setExposureEv(ev: Float) {
+        val clamped = ev.coerceIn(-2.0f, 2.0f)
+        _state.update { it.copy(exposureEv = clamped) }
+        updateRepeatingRequestOnFly()
     }
 
     fun setPreviewEnabled(enabled: Boolean) {
@@ -310,23 +376,31 @@ class WebcamController private constructor(private val application: Application)
             val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             val sizes = map?.getOutputSizes(ImageFormat.YUV_420_888) ?: return Size(targetW, targetH)
 
-            // Exact match first
+            // Exact match first (enables zero-scale NEON/memcpy fast path)
             sizes.firstOrNull { it.width == targetW && it.height == targetH }?.let { return it }
 
-            // Otherwise closest 16:9 or matching aspect ratio >= target size
-            sizes.minByOrNull { size ->
-                abs(size.width - targetW) + abs(size.height - targetH)
-            } ?: Size(targetW, targetH)
+            // Otherwise closest matching resolution >= target size
+            sizes.filter { it.width >= targetW && it.height >= targetH }
+                .minByOrNull { (it.width - targetW) + (it.height - targetH) }
+                ?: sizes.minByOrNull { abs(it.width - targetW) + abs(it.height - targetH) }
+                ?: Size(targetW, targetH)
         }.getOrDefault(Size(targetW, targetH))
     }
 
-    private fun chooseFpsRange(cameraId: String, targetFps: Int): Range<Int>? {
+    private fun chooseFpsRange(cameraId: String, desiredFps: Int, lockConstant: Boolean): Range<Int>? {
         return runCatching {
             val chars = cameraManager.getCameraCharacteristics(cameraId)
             val ranges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: return null
-            ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps }
-                ?: ranges.firstOrNull { it.upper == targetFps }
-                ?: ranges.maxByOrNull { it.upper }
+            if (lockConstant) {
+                ranges.firstOrNull { it.lower == desiredFps && it.upper == desiredFps }
+                    ?: ranges.filter { it.upper == desiredFps }.maxByOrNull { it.lower }
+                    ?: ranges.filter { it.upper >= desiredFps }.minByOrNull { it.upper - it.lower }
+                    ?: ranges.maxByOrNull { it.upper }
+            } else {
+                ranges.filter { it.upper == desiredFps }.minByOrNull { it.lower }
+                    ?: ranges.firstOrNull { it.upper >= desiredFps }
+                    ?: ranges.maxByOrNull { it.upper }
+            }
         }.getOrNull()
     }
 
@@ -335,7 +409,8 @@ class WebcamController private constructor(private val application: Application)
     private fun startCameraCapture(targetW: Int, targetH: Int, targetFps: Int) {
         stopCameraCapture()
 
-        val thread = HandlerThread("UvcCamera2Thread").apply { start() }
+        // Use URGENT_DISPLAY priority (-8) so Android keeps the frame encoder on big cores even with screen off
+        val thread = HandlerThread("UvcCamera2Thread", Process.THREAD_PRIORITY_URGENT_DISPLAY).apply { start() }
         val handler = Handler(thread.looper)
         cameraThread = thread
         cameraHandler = handler
@@ -344,11 +419,12 @@ class WebcamController private constructor(private val application: Application)
         val captureSize = chooseOptimalSize(camId, targetW, targetH)
         Timber.i("Starting Camera2 ($camId) capture at ${captureSize.width}x${captureSize.height} for UVC ${targetW}x${targetH}@${targetFps}fps")
 
+        // 4 ImageReader buffers allow smooth triple-buffered camera ISP output while 1 frame is being compressed
         val reader = ImageReader.newInstance(
             captureSize.width,
             captureSize.height,
             ImageFormat.YUV_420_888,
-            3
+            4
         )
         imageReader = reader
 
@@ -389,6 +465,86 @@ class WebcamController private constructor(private val application: Application)
         }
     }
 
+    private fun applyCameraParameters(
+        builder: CaptureRequest.Builder,
+        camId: String,
+        s: WebcamStreamState
+    ) {
+        val effectiveFps = if (s.targetFpsCap > 0) minOf(s.negotiatedFps, s.targetFpsCap) else s.negotiatedFps
+
+        // Low-latency ISP pipeline flags
+        builder.set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_FAST)
+        builder.set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_FAST)
+        builder.set(CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE, CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE_FAST)
+
+        // FPS & Auto-Exposure range
+        chooseFpsRange(camId, effectiveFps, s.lockConstantFps)?.let { fpsRange ->
+            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange)
+        }
+
+        // Autofocus mode
+        if (s.autoFocusEnabled) {
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+        } else {
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+            builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, 0.0f) // Infinity / hyperfocal
+        }
+
+        // Video stabilization
+        if (s.videoStabilization) {
+            builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON)
+        } else {
+            builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+        }
+
+        // Exposure compensation (EV) & Zoom
+        runCatching {
+            val chars = cameraManager.getCameraCharacteristics(camId)
+            val evRange = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
+            val evStep = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)?.toFloat() ?: 0f
+            if (evRange != null && evStep > 0f) {
+                val index = (s.exposureEv / evStep).roundToInt().coerceIn(evRange.lower, evRange.upper)
+                builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, index)
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, s.zoomRatio)
+            } else {
+                val activeRect = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+                if (activeRect != null && s.zoomRatio > 1.0f) {
+                    val cropW = (activeRect.width() / s.zoomRatio).roundToInt()
+                    val cropH = (activeRect.height() / s.zoomRatio).roundToInt()
+                    val cropX = (activeRect.width() - cropW) / 2
+                    val cropY = (activeRect.height() - cropH) / 2
+                    builder.set(CaptureRequest.SCALER_CROP_REGION, Rect(cropX, cropY, cropX + cropW, cropY + cropH))
+                }
+            }
+        }
+    }
+
+    @Synchronized
+    private fun updateRepeatingRequestOnFly() {
+        val cam = cameraDevice ?: return
+        val session = captureSession ?: return
+        val reader = imageReader ?: return
+        val handler = cameraHandler ?: return
+        val s = _state.value
+
+        try {
+            val requestBuilder = cam.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
+                addTarget(reader.surface)
+                val currentPreview = previewSurface
+                if (s.isPreviewEnabled && currentPreview != null && currentPreview.isValid) {
+                    addTarget(currentPreview)
+                }
+                applyCameraParameters(this, s.selectedCameraId, s)
+            }
+            session.setRepeatingRequest(requestBuilder.build(), null, handler)
+        } catch (e: Exception) {
+            Timber.w(e, "Failed to update Camera2 repeating request on the fly")
+        }
+    }
+
     private fun createCaptureSession(
         camera: CameraDevice,
         readerSurface: Surface,
@@ -398,7 +554,8 @@ class WebcamController private constructor(private val application: Application)
     ) {
         val surfaces = mutableListOf(readerSurface)
         val currentPreview = previewSurface
-        if (_state.value.isPreviewEnabled && currentPreview != null && currentPreview.isValid) {
+        val s = _state.value
+        if (s.isPreviewEnabled && currentPreview != null && currentPreview.isValid) {
             surfaces.add(currentPreview)
         }
 
@@ -408,10 +565,7 @@ class WebcamController private constructor(private val application: Application)
                 if (surfaces.size > 1 && currentPreview != null) {
                     addTarget(currentPreview)
                 }
-                set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
-                chooseFpsRange(camId, targetFps)?.let { fpsRange ->
-                    set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange)
-                }
+                applyCameraParameters(this, camId, s.copy(negotiatedFps = targetFps))
             }
 
             @Suppress("DEPRECATION")
@@ -441,6 +595,22 @@ class WebcamController private constructor(private val application: Application)
             return
         }
 
+        val startNs = System.nanoTime()
+
+        // 1. Optional user FPS cap pacing
+        if (currentState.targetFpsCap > 0 && lastSubmittedFrameNs != 0L) {
+            val minIntervalNs = (1_000_000_000L / currentState.targetFpsCap) * 90 / 100
+            if (startNs - lastSubmittedFrameNs < minIntervalNs) {
+                return
+            }
+        }
+
+        // 2. Check if V4L2 ring buffer can accept a frame BEFORE doing any YUV/JPEG encoding!
+        val maxInFlight = currentState.maxInFlightBuffers
+        if (!UvcNative.nativeCanAcceptFrame(maxInFlight)) {
+            return
+        }
+
         val planes = image.planes
         if (planes.size < 3) return
 
@@ -452,12 +622,12 @@ class WebcamController private constructor(private val application: Application)
         val uvRowStride = planes[1].rowStride
         val uvPixelStride = planes[1].pixelStride
 
-        // Calculate total rotation combining camera sensor orientation and user rotation offset
         val lens = currentState.availableCameras.firstOrNull { it.cameraId == currentState.selectedCameraId }
         val totalRotation = currentState.rotationDegrees
         val mirror = currentState.mirrorHorizontal || (lens?.isFrontFacing == true && !currentState.mirrorHorizontal)
 
         val pushed: Boolean
+        val payloadBytes: Int
         if (currentState.negotiatedFormat == "MJPEG") {
             val neededNv21Size = dstW * dstH * 3 / 2
             if (nv21Buffer.size != neededNv21Size) {
@@ -484,8 +654,10 @@ class WebcamController private constructor(private val application: Application)
             val yuvImage = YuvImage(nv21Buffer, ImageFormat.NV21, dstW, dstH, null)
             yuvImage.compressToJpeg(Rect(0, 0, dstW, dstH), currentState.jpegQuality, jpegOutputStream)
 
-            pushed = UvcNative.nativePushMjpegFrame(directJpegBuffer, jpegOutputStream.size)
+            payloadBytes = jpegOutputStream.size
+            pushed = UvcNative.nativePushMjpegFrame(directJpegBuffer, payloadBytes, maxInFlight)
         } else {
+            payloadBytes = dstW * dstH * 2
             pushed = UvcNative.nativePushYuvToYuyvFrame(
                 planes[0].buffer,
                 planes[1].buffer,
@@ -496,22 +668,37 @@ class WebcamController private constructor(private val application: Application)
                 uvRowStride,
                 uvPixelStride,
                 totalRotation,
-                mirror
+                mirror,
+                maxInFlight
             )
         }
 
         if (pushed) {
+            val endNs = System.nanoTime()
+            lastSubmittedFrameNs = endNs
             frameCountWindow++
-            val now = System.nanoTime()
+            encodeTimeSumNs += (endNs - startNs)
+            frameBytesSum += payloadBytes
+
             if (lastFpsTimestampNs == 0L) {
-                lastFpsTimestampNs = now
+                lastFpsTimestampNs = endNs
             } else {
-                val elapsedNs = now - lastFpsTimestampNs
+                val elapsedNs = endNs - lastFpsTimestampNs
                 if (elapsedNs >= 1_000_000_000L) {
                     val fps = (frameCountWindow * 1_000_000_000f) / elapsedNs
+                    val avgMs = (encodeTimeSumNs.toFloat() / frameCountWindow) / 1_000_000f
+                    val avgKb = (frameBytesSum.toFloat() / frameCountWindow) / 1024f
                     frameCountWindow = 0
-                    lastFpsTimestampNs = now
-                    _state.update { it.copy(measuredFps = fps) }
+                    encodeTimeSumNs = 0L
+                    frameBytesSum = 0L
+                    lastFpsTimestampNs = endNs
+                    _state.update {
+                        it.copy(
+                            measuredFps = fps,
+                            avgEncodeTimeMs = avgMs,
+                            avgFrameSizeKb = avgKb
+                        )
+                    }
                 }
             }
         }
@@ -532,7 +719,10 @@ class WebcamController private constructor(private val application: Application)
         cameraThread = null
         cameraHandler = null
         frameCountWindow = 0
+        encodeTimeSumNs = 0L
+        frameBytesSum = 0L
         lastFpsTimestampNs = 0L
+        lastSubmittedFrameNs = 0L
     }
 
     companion object {

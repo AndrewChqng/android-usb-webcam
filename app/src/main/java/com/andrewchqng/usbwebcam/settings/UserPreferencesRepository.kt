@@ -51,7 +51,7 @@ sealed class AppPreference(val preference: PreferenceKey<*>) {
         BooleanPreferenceKey("disable_gadget_functions_during_config", false)
 
     data object UvcMaxPacketSizePref : ObjectPreferenceKey<UvcMaxPacketOption>(
-        "uvc_max_packet_size", UvcMaxPacketOption.Standard1024,
+        "uvc_max_packet_size_v2", UvcMaxPacketOption.Standard1024,
         fromStringPreference = {
             when (it) {
                 UvcMaxPacketOption.HighBandwidth3072.key -> UvcMaxPacketOption.HighBandwidth3072
@@ -61,6 +61,21 @@ sealed class AppPreference(val preference: PreferenceKey<*>) {
         },
         toStringPreference = { it.key }
     )
+
+    data object UvcMaxBurstPref : ObjectPreferenceKey<UvcMaxBurstOption>(
+        "uvc_max_burst", UvcMaxBurstOption.Burst0,
+        fromStringPreference = {
+            when (it) {
+                UvcMaxBurstOption.Burst4.key -> UvcMaxBurstOption.Burst4
+                UvcMaxBurstOption.Burst8.key -> UvcMaxBurstOption.Burst8
+                UvcMaxBurstOption.Burst15.key -> UvcMaxBurstOption.Burst15
+                else -> UvcMaxBurstOption.Burst0
+            }
+        },
+        toStringPreference = { it.key }
+    )
+
+    data object BoostUsbIrqPriority : BooleanPreferenceKey("boost_usb_irq_priority", true)
 }
 
 sealed class SealedString(val key: String, @StringRes val id: Int)
@@ -77,13 +92,25 @@ sealed class AppTheme(key: String, @StringRes id: Int) : SealedString(key, id) {
 }
 
 sealed class UvcMaxPacketOption(key: String, @StringRes id: Int, val bytes: Int) : SealedString(key, id) {
-    data object HighBandwidth3072 : UvcMaxPacketOption("3072", R.string.uvc_maxpacket_3072, 3072)
-    data object Medium2048 : UvcMaxPacketOption("2048", R.string.uvc_maxpacket_2048, 2048)
     data object Standard1024 : UvcMaxPacketOption("1024", R.string.uvc_maxpacket_1024, 1024)
+    data object Medium2048 : UvcMaxPacketOption("2048", R.string.uvc_maxpacket_2048, 2048)
+    data object HighBandwidth3072 : UvcMaxPacketOption("3072", R.string.uvc_maxpacket_3072, 3072)
 
     companion object {
         val values: List<UvcMaxPacketOption>
-            get() = listOf(HighBandwidth3072, Medium2048, Standard1024)
+            get() = listOf(Standard1024, Medium2048, HighBandwidth3072)
+    }
+}
+
+sealed class UvcMaxBurstOption(key: String, @StringRes id: Int, val burst: Int) : SealedString(key, id) {
+    data object Burst0 : UvcMaxBurstOption("0", R.string.uvc_maxburst_0, 0)
+    data object Burst4 : UvcMaxBurstOption("4", R.string.uvc_maxburst_4, 4)
+    data object Burst8 : UvcMaxBurstOption("8", R.string.uvc_maxburst_8, 8)
+    data object Burst15 : UvcMaxBurstOption("15", R.string.uvc_maxburst_15, 15)
+
+    companion object {
+        val values: List<UvcMaxBurstOption>
+            get() = listOf(Burst0, Burst4, Burst8, Burst15)
     }
 }
 
@@ -97,6 +124,8 @@ data class UserPreferences(
     val createNewGadgetForFunctions: Boolean,
     val disableGadgetFunctionsDuringConfiguration: Boolean,
     val uvcMaxPacketOption: UvcMaxPacketOption,
+    val uvcMaxBurstOption: UvcMaxBurstOption,
+    val boostUsbIrqPriority: Boolean,
 )
 
 @Parcelize
@@ -106,6 +135,8 @@ data class GadgetUserPreferences(
     val createNewGadgetForFunctions: Boolean,
     val disableGadgetFunctionsDuringConfiguration: Boolean,
     val uvcMaxPacketSize: Int = 1024,
+    val uvcMaxBurst: Int = 0,
+    val boostUsbIrqPriority: Boolean = true,
 ) : Parcelable {
     companion object {
         fun fromUserPreferences(userPreferences: UserPreferences): GadgetUserPreferences {
@@ -115,6 +146,8 @@ data class GadgetUserPreferences(
                 createNewGadgetForFunctions = userPreferences.createNewGadgetForFunctions,
                 disableGadgetFunctionsDuringConfiguration = userPreferences.disableGadgetFunctionsDuringConfiguration,
                 uvcMaxPacketSize = userPreferences.uvcMaxPacketOption.bytes,
+                uvcMaxBurst = userPreferences.uvcMaxBurstOption.burst,
+                boostUsbIrqPriority = userPreferences.boostUsbIrqPriority,
             )
         }
     }
@@ -142,6 +175,8 @@ class UserPreferencesRepository private constructor(application: Application) {
                 createNewGadgetForFunctions = AppPreference.CreateNewGadgetForFunctions.getValue(),
                 disableGadgetFunctionsDuringConfiguration = AppPreference.DisableGadgetFunctionsDuringConfiguration.getValue(),
                 uvcMaxPacketOption = AppPreference.UvcMaxPacketSizePref.getValue(),
+                uvcMaxBurstOption = AppPreference.UvcMaxBurstPref.getValue(),
+                boostUsbIrqPriority = AppPreference.BoostUsbIrqPriority.getValue(),
             )
         }
 

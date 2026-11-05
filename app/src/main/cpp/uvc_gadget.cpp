@@ -6,16 +6,23 @@
 #include <jni.h>
 #include <poll.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/time.h>
 #include <unistd.h>
 
+#if defined(__aarch64__) || defined(__ARM_NEON__)
+#include <arm_neon.h>
+#endif
+
 #include <atomic>
 #include <mutex>
+#include <vector>
 
 #define LOG_TAG "UvcGadgetJNI"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
@@ -25,9 +32,11 @@
 
 namespace {
 
-constexpr int kNumV4l2Buffers = 4;
+// Use 6 V4L2 MMAP buffers in a strict circular ring so a dequeued buffer is never
+// overwritten while DWC3 scatter-gather DMA still has trailing USB requests in flight.
+constexpr int kNumV4l2Buffers = 6;
 
-// Format table matching our ConfigFS layout in UsbGadgetService.kt:
+// Format table matching our ConfigFS layout in CharacterDeviceManager.kt:
 // Format 1: MJPEG (1: 640x360, 2: 1280x720, 3: 1920x1080)
 // Format 2: YUYV  (1: 640x360, 2: 640x480,  3: 1280x720)
 static const UvcFormatDesc kSupportedFormats[2] = {
@@ -62,7 +71,7 @@ struct MmapBuffer {
 struct UvcContext {
     int v4l2_fd = -1;
     int stop_efd = -1;
-    uint32_t max_payload_size = 3072;
+    uint32_t max_payload_size = 1024;
 
     uint8_t current_control = 0; // UVC_VS_PROBE_CONTROL or UVC_VS_COMMIT_CONTROL
     struct uvc_streaming_control probe_ctrl {};
@@ -77,13 +86,14 @@ struct UvcContext {
     std::mutex stream_mutex;
     MmapBuffer buffers[kNumV4l2Buffers]{};
     uint32_t num_buffers = 0;
+    uint32_t next_write_idx = 0;
     uint32_t frame_sequence = 0;
 };
 
 static std::mutex g_ctx_mutex;
 static UvcContext* g_ctx = nullptr;
 
-// Minimal valid 16x16 black JPEG used to prime V4L2 buffers on STREAMON before Camera2 delivers its first frame
+// Minimal valid 16x16 black JPEG used to prime V4L2 buffer 0 on STREAMON before Camera2 delivers its first frame
 static const uint8_t kTinyBlackJpeg[] = {
     0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01,
     0x01, 0x01, 0x00, 0x48, 0x00, 0x48, 0x00, 0x00, 0xff, 0xdb, 0x00, 0x43,
@@ -142,10 +152,11 @@ void fillStreamingControl(
     ctrl->bMaxVersion = 1;
 }
 
-void stopV4l2StreamingLocked(UvcContext* ctx) {
+void stopV4l2StreamingLocked(UvcContext* ctx, bool callStreamOffIoctl = true) {
     if (!ctx) return;
 
-    if (ctx->is_streaming.exchange(false)) {
+    const bool wasStreaming = ctx->is_streaming.exchange(false);
+    if (wasStreaming && callStreamOffIoctl && ctx->v4l2_fd >= 0) {
         int type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
         if (ioctl(ctx->v4l2_fd, VIDIOC_STREAMOFF, &type) < 0) {
             LOGW("VIDIOC_STREAMOFF failed: %s", strerror(errno));
@@ -161,16 +172,19 @@ void stopV4l2StreamingLocked(UvcContext* ctx) {
         ctx->buffers[i].queued = false;
     }
     ctx->num_buffers = 0;
+    ctx->next_write_idx = 0;
 
-    struct v4l2_requestbuffers req {};
-    req.count = 0;
-    req.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
-    req.memory = V4L2_MEMORY_MMAP;
-    ioctl(ctx->v4l2_fd, VIDIOC_REQBUFS, &req);
+    if (ctx->v4l2_fd >= 0) {
+        struct v4l2_requestbuffers req {};
+        req.count = 0;
+        req.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+        req.memory = V4L2_MEMORY_MMAP;
+        ioctl(ctx->v4l2_fd, VIDIOC_REQBUFS, &req);
+    }
 }
 
 bool startV4l2StreamingLocked(UvcContext* ctx) {
-    stopV4l2StreamingLocked(ctx);
+    stopV4l2StreamingLocked(ctx, false);
 
     struct v4l2_format fmt {};
     fmt.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
@@ -202,6 +216,7 @@ bool startV4l2StreamingLocked(UvcContext* ctx) {
 
     ctx->num_buffers = req.count > kNumV4l2Buffers ? kNumV4l2Buffers : req.count;
     ctx->frame_sequence = 0;
+    ctx->next_write_idx = 0;
 
     for (uint32_t i = 0; i < ctx->num_buffers; ++i) {
         struct v4l2_buffer buf {};
@@ -210,14 +225,14 @@ bool startV4l2StreamingLocked(UvcContext* ctx) {
         buf.index = i;
         if (ioctl(ctx->v4l2_fd, VIDIOC_QUERYBUF, &buf) < 0) {
             LOGE("VIDIOC_QUERYBUF[%u] failed: %s", i, strerror(errno));
-            stopV4l2StreamingLocked(ctx);
+            stopV4l2StreamingLocked(ctx, false);
             return false;
         }
 
         void* ptr = mmap(nullptr, buf.length, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->v4l2_fd, buf.m.offset);
         if (ptr == MAP_FAILED) {
             LOGE("mmap[%u] failed: %s", i, strerror(errno));
-            stopV4l2StreamingLocked(ctx);
+            stopV4l2StreamingLocked(ctx, false);
             return false;
         }
 
@@ -226,8 +241,7 @@ bool startV4l2StreamingLocked(UvcContext* ctx) {
         ctx->buffers[i].queued = false;
     }
 
-    // Queue a single initial dummy frame on buffer 0 so the host gets an immediate payload on STREAMON,
-    // leaving buffers 1..N-1 free for Camera2 frames to queue immediately without waiting for VIDIOC_DQBUF!
+    // Prime only buffer 0 so the host receives an immediate frame on STREAMON while buffers 1..N-1 remain free
     if (ctx->num_buffers > 0) {
         struct v4l2_buffer buf {};
         buf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
@@ -248,19 +262,20 @@ bool startV4l2StreamingLocked(UvcContext* ctx) {
         }
         if (ioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf) == 0) {
             ctx->buffers[0].queued = true;
+            ctx->next_write_idx = 1 % ctx->num_buffers;
         }
     }
 
     int type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
     if (ioctl(ctx->v4l2_fd, VIDIOC_STREAMON, &type) < 0) {
         LOGE("VIDIOC_STREAMON failed: %s", strerror(errno));
-        stopV4l2StreamingLocked(ctx);
+        stopV4l2StreamingLocked(ctx, false);
         return false;
     }
 
     ctx->is_streaming.store(true);
-    LOGI("V4L2 UVC stream started: %ux%u fourcc=0x%x interval=%u",
-         ctx->active_width, ctx->active_height, ctx->active_fourcc, ctx->active_interval);
+    LOGI("V4L2 UVC stream started: %ux%u fourcc=0x%x interval=%u num_buffers=%u",
+         ctx->active_width, ctx->active_height, ctx->active_fourcc, ctx->active_interval, ctx->num_buffers);
     return true;
 }
 
@@ -279,8 +294,6 @@ void handleUvcSetupEvent(UvcContext* ctx, const struct usb_ctrlrequest& ctrl, st
     const uint8_t entityId = (ctrl.wIndex >> 8) & 0xff;
     const uint8_t cs = (ctrl.wValue >> 8) & 0xff;
 
-    // Distinguish VideoStreaming Probe/Commit requests from VideoControl requests
-    // regardless of which USB interface number uvc.0 is assigned in a composite gadget.
     const bool isStreamingProbeOrCommit =
         (entityId == 0) &&
         (cs == UVC_VS_PROBE_CONTROL || cs == UVC_VS_COMMIT_CONTROL) &&
@@ -291,7 +304,6 @@ void handleUvcSetupEvent(UvcContext* ctx, const struct usb_ctrlrequest& ctrl, st
             resp.data[0] = 0x06; // Invalid control
             resp.length = 1;
         } else {
-            // Return benign defaults for control interface requests so picky hosts never hang
             switch (ctrl.bRequest) {
                 case UVC_SET_CUR:
                     resp.data[0] = 0x00;
@@ -393,64 +405,140 @@ void handleUvcDataEvent(UvcContext* ctx, const struct uvc_request_data& data) {
     }
 }
 
-// Helper to map destination (x, y) in [0..dstW-1, 0..dstH-1] back to source (sx, sy) in [0..srcW-1, 0..srcH-1]
-inline void mapDestToSrc(
-    int dx, int dy, int dstW, int dstH,
-    int srcW, int srcH, int rotation, bool mirror,
-    int& sx, int& sy
+/**
+ * Precomputes 1D source coordinate lookup tables in O(dstW + dstH) time instead of O(dstW * dstH),
+ * completely eliminating per-pixel branches and integer divisions during scaling/rotation/mirroring.
+ *
+ * When swappedAxes == false (rotation 0 or 180):
+ *   sx = lutForDestX[dx], sy = lutForDestY[dy]
+ * When swappedAxes == true (rotation 90 or 270):
+ *   sx = lutForDestY[dy], sy = lutForDestX[dx]
+ */
+void buildCoordinateLuts(
+    int dstW, int dstH,
+    int srcW, int srcH,
+    int rotation, bool mirror,
+    bool& swappedAxes,
+    std::vector<int>& lutForDestX,
+    std::vector<int>& lutForDestY
 ) {
-    int mx = mirror ? (dstW - 1 - dx) : dx;
-    int my = dy;
+    swappedAxes = (rotation == 90 || rotation == 270);
+    const int rw = swappedAxes ? dstH : dstW;
+    const int rh = swappedAxes ? dstW : dstH;
 
-    // Normalize coordinates into [0..dstW, 0..dstH] then rotate
-    int rx, ry, rw, rh;
-    switch (rotation) {
-        case 90:
-            rx = my;
-            ry = dstW - 1 - mx;
-            rw = dstH;
-            rh = dstW;
-            break;
-        case 180:
-            rx = dstW - 1 - mx;
-            ry = dstH - 1 - my;
-            rw = dstW;
-            rh = dstH;
-            break;
-        case 270:
-            rx = dstH - 1 - my;
-            ry = mx;
-            rw = dstH;
-            rh = dstW;
-            break;
-        default: // 0
-            rx = mx;
-            ry = my;
-            rw = dstW;
-            rh = dstH;
-            break;
-    }
+    int croppedSrcW = srcW;
+    int croppedSrcH = srcH;
+    int offsetX = 0;
+    int offsetY = 0;
 
-    // Center-crop + scale from source aspect ratio to destination aspect ratio
-    // Use integer arithmetic for speed
     if (srcW * rh > srcH * rw) {
-        // Source is wider than destination: crop horizontally
-        int croppedSrcW = (srcH * rw) / rh;
-        int offsetX = (srcW - croppedSrcW) / 2;
-        sx = offsetX + (rx * croppedSrcW) / rw;
-        sy = (ry * srcH) / rh;
-    } else {
-        // Source is taller than (or equal to) destination: crop vertically
-        int croppedSrcH = (srcW * rh) / rw;
-        int offsetY = (srcH - croppedSrcH) / 2;
-        sx = (rx * srcW) / rw;
-        sy = offsetY + (ry * croppedSrcH) / rh;
+        croppedSrcW = (srcH * rw) / rh;
+        offsetX = (srcW - croppedSrcW) / 2;
+    } else if (srcW * rh < srcH * rw) {
+        croppedSrcH = (srcW * rh) / rw;
+        offsetY = (srcH - croppedSrcH) / 2;
     }
 
-    if (sx < 0) sx = 0;
-    else if (sx >= srcW) sx = srcW - 1;
-    if (sy < 0) sy = 0;
-    else if (sy >= srcH) sy = srcH - 1;
+    lutForDestX.resize(dstW);
+    lutForDestY.resize(dstH);
+
+    if (!swappedAxes) {
+        // rotation 0 or 180: rx depends on dx, ry depends on dy
+        for (int dx = 0; dx < dstW; ++dx) {
+            int mx = mirror ? (dstW - 1 - dx) : dx;
+            int rx = (rotation == 180) ? (dstW - 1 - mx) : mx;
+            int sx = offsetX + (rx * croppedSrcW) / rw;
+            if (sx < 0) sx = 0;
+            else if (sx >= srcW) sx = srcW - 1;
+            lutForDestX[dx] = sx;
+        }
+        for (int dy = 0; dy < dstH; ++dy) {
+            int ry = (rotation == 180) ? (dstH - 1 - dy) : dy;
+            int sy = offsetY + (ry * croppedSrcH) / rh;
+            if (sy < 0) sy = 0;
+            else if (sy >= srcH) sy = srcH - 1;
+            lutForDestY[dy] = sy;
+        }
+    } else {
+        // rotation 90 or 270: rx depends on dy, ry depends on dx
+        for (int dx = 0; dx < dstW; ++dx) {
+            int mx = mirror ? (dstW - 1 - dx) : dx;
+            int ry = (rotation == 90) ? (dstW - 1 - mx) : mx;
+            int sy = offsetY + (ry * croppedSrcH) / rh;
+            if (sy < 0) sy = 0;
+            else if (sy >= srcH) sy = srcH - 1;
+            lutForDestX[dx] = sy;
+        }
+        for (int dy = 0; dy < dstH; ++dy) {
+            int rx = (rotation == 270) ? (dstH - 1 - dy) : dy;
+            int sx = offsetX + (rx * croppedSrcW) / rw;
+            if (sx < 0) sx = 0;
+            else if (sx >= srcW) sx = srcW - 1;
+            lutForDestY[dy] = sx;
+        }
+    }
+}
+
+void drainCompletedBuffersLocked(UvcContext* ctx) {
+    while (true) {
+        struct v4l2_buffer dq {};
+        dq.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+        dq.memory = V4L2_MEMORY_MMAP;
+        if (ioctl(ctx->v4l2_fd, VIDIOC_DQBUF, &dq) == 0) {
+            if (dq.index < ctx->num_buffers) {
+                ctx->buffers[dq.index].queued = false;
+            }
+        } else {
+            break;
+        }
+    }
+}
+
+uint32_t countQueuedBuffersLocked(const UvcContext* ctx) {
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < ctx->num_buffers; ++i) {
+        if (ctx->buffers[i].queued) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+/**
+ * Drains completed V4L2 buffers and selects the next write buffer using a strict round-robin index
+ * (`next_write_idx`) while respecting `maxInFlight`.
+ *
+ * This guarantees that a buffer recently marked DONE by `f_uvc` (which may still have scatter-gather
+ * TRBs draining in the DWC3 hardware FIFO) is not overwritten until `num_buffers - 1` frames later,
+ * completely preventing mid-frame tearing.
+ */
+int acquireWritableBufferLocked(UvcContext* ctx, struct v4l2_buffer& buf, int maxInFlight) {
+    drainCompletedBuffersLocked(ctx);
+
+    if (ctx->num_buffers == 0) {
+        return -1;
+    }
+
+    const uint32_t maxQueued = (maxInFlight >= 1 && static_cast<uint32_t>(maxInFlight) < ctx->num_buffers)
+        ? static_cast<uint32_t>(maxInFlight)
+        : (ctx->num_buffers - 1);
+
+    if (countQueuedBuffersLocked(ctx) >= maxQueued) {
+        return -1;
+    }
+
+    for (uint32_t step = 0; step < ctx->num_buffers; ++step) {
+        uint32_t idx = (ctx->next_write_idx + step) % ctx->num_buffers;
+        if (!ctx->buffers[idx].queued && ctx->buffers[idx].start != nullptr) {
+            memset(&buf, 0, sizeof(buf));
+            buf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+            buf.memory = V4L2_MEMORY_MMAP;
+            buf.index = idx;
+            ctx->next_write_idx = (idx + 1) % ctx->num_buffers;
+            return static_cast<int>(idx);
+        }
+    }
+    return -1;
 }
 
 } // namespace
@@ -466,7 +554,7 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeOpen(
 
     if (g_ctx != nullptr) {
         std::lock_guard<std::mutex> slock(g_ctx->stream_mutex);
-        stopV4l2StreamingLocked(g_ctx);
+        stopV4l2StreamingLocked(g_ctx, false);
         if (g_ctx->v4l2_fd >= 0) close(g_ctx->v4l2_fd);
         if (g_ctx->stop_efd >= 0) close(g_ctx->stop_efd);
         delete g_ctx;
@@ -481,7 +569,7 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeOpen(
         env->ReleaseStringUTFChars(jDevicePath, path);
         return -err;
     }
-    LOGI("Opened UVC V4L2 device: %s (fd=%d)", path, fd);
+    LOGI("Opened UVC V4L2 device: %s (fd=%d, maxPayload=%d)", path, fd, maxPayloadSize);
     env->ReleaseStringUTFChars(jDevicePath, path);
 
     struct v4l2_capability cap {};
@@ -495,13 +583,12 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeOpen(
     auto* ctx = new UvcContext();
     ctx->v4l2_fd = fd;
     ctx->stop_efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    ctx->max_payload_size = (maxPayloadSize > 0) ? static_cast<uint32_t>(maxPayloadSize) : 3072u;
+    ctx->max_payload_size = (maxPayloadSize > 0) ? static_cast<uint32_t>(maxPayloadSize) : 1024u;
 
     // Default to 1280x720 MJPEG @ 30fps
     fillStreamingControl(ctx, &ctx->probe_ctrl, 1, 2, 333333);
     fillStreamingControl(ctx, &ctx->commit_ctrl, 1, 2, 333333);
 
-    // Subscribe to all UVC gadget V4L2 events
     for (uint32_t evType = UVC_EVENT_FIRST; evType <= UVC_EVENT_LAST; ++evType) {
         struct v4l2_event_subscription sub {};
         sub.type = evType;
@@ -520,6 +607,9 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeRunEventLoop(
     jobject /* thiz */,
     jobject callback
 ) {
+    // Elevate UVC event responder thread priority for minimum control/setup latency
+    setpriority(PRIO_PROCESS, 0, -16);
+
     UvcContext* ctx = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_ctx_mutex);
@@ -573,7 +663,8 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeRunEventLoop(
                         LOGI("UVC_EVENT_DISCONNECT");
                         {
                             std::lock_guard<std::mutex> slock(ctx->stream_mutex);
-                            stopV4l2StreamingLocked(ctx);
+                            // Do not call VIDIOC_STREAMOFF on DISCONNECT if not in delayed_status
+                            stopV4l2StreamingLocked(ctx, false);
                         }
                         env->CallVoidMethod(callback, onStreamStateChanged, JNI_FALSE, JNI_TRUE, 0, 0, 0);
                         env->CallVoidMethod(callback, onHostConnectionChanged, JNI_FALSE);
@@ -620,7 +711,7 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeRunEventLoop(
                         LOGI("UVC_EVENT_STREAMOFF");
                         {
                             std::lock_guard<std::mutex> slock(ctx->stream_mutex);
-                            stopV4l2StreamingLocked(ctx);
+                            stopV4l2StreamingLocked(ctx, true);
                         }
                         env->CallVoidMethod(callback, onStreamStateChanged, JNI_FALSE, JNI_TRUE, 0, 0, 0);
                         break;
@@ -651,7 +742,7 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeClose(
 
     {
         std::lock_guard<std::mutex> slock(g_ctx->stream_mutex);
-        stopV4l2StreamingLocked(g_ctx);
+        stopV4l2StreamingLocked(g_ctx, false);
     }
 
     if (g_ctx->v4l2_fd >= 0) {
@@ -667,32 +758,33 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeClose(
     g_ctx = nullptr;
 }
 
-int acquireWritableBufferLocked(UvcContext* ctx, struct v4l2_buffer& buf) {
-    // First drain any completed buffers from the driver
-    while (true) {
-        struct v4l2_buffer dq {};
-        dq.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
-        dq.memory = V4L2_MEMORY_MMAP;
-        if (ioctl(ctx->v4l2_fd, VIDIOC_DQBUF, &dq) == 0) {
-            if (dq.index < ctx->num_buffers) {
-                ctx->buffers[dq.index].queued = false;
-            }
-        } else {
-            break;
-        }
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeCanAcceptFrame(
+    JNIEnv* /* env */,
+    jobject /* thiz */,
+    jint maxInFlight
+) {
+    UvcContext* ctx = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_ctx_mutex);
+        ctx = g_ctx;
+    }
+    if (!ctx || !ctx->is_streaming.load()) {
+        return JNI_FALSE;
     }
 
-    // Find an unqueued buffer
-    for (uint32_t i = 0; i < ctx->num_buffers; ++i) {
-        if (!ctx->buffers[i].queued && ctx->buffers[i].start != nullptr) {
-            memset(&buf, 0, sizeof(buf));
-            buf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
-            buf.memory = V4L2_MEMORY_MMAP;
-            buf.index = i;
-            return static_cast<int>(i);
-        }
+    std::lock_guard<std::mutex> slock(ctx->stream_mutex);
+    if (!ctx->is_streaming.load() || ctx->v4l2_fd < 0 || ctx->num_buffers == 0) {
+        return JNI_FALSE;
     }
-    return -1;
+
+    drainCompletedBuffersLocked(ctx);
+
+    const uint32_t maxQueued = (maxInFlight >= 1 && static_cast<uint32_t>(maxInFlight) < ctx->num_buffers)
+        ? static_cast<uint32_t>(maxInFlight)
+        : (ctx->num_buffers - 1);
+
+    return (countQueuedBuffersLocked(ctx) < maxQueued) ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -700,7 +792,8 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativePushMjpegFrame(
     JNIEnv* env,
     jobject /* thiz */,
     jobject jDirectJpegBuf,
-    jint length
+    jint length,
+    jint maxInFlight
 ) {
     UvcContext* ctx = nullptr;
     {
@@ -718,7 +811,7 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativePushMjpegFrame(
     if (!ctx->is_streaming.load() || ctx->v4l2_fd < 0) return JNI_FALSE;
 
     struct v4l2_buffer buf {};
-    int idx = acquireWritableBufferLocked(ctx, buf);
+    int idx = acquireWritableBufferLocked(ctx, buf, maxInFlight);
     if (idx < 0) {
         return JNI_FALSE;
     }
@@ -737,9 +830,6 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativePushMjpegFrame(
 
     if (ioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf) == 0) {
         ctx->buffers[idx].queued = true;
-        if ((buf.sequence % 30) == 1) {
-            LOGI("Queued MJPEG frame #%u (%zu bytes) to V4L2 buf[%d]", buf.sequence, copyLen, idx);
-        }
         return JNI_TRUE;
     } else {
         LOGE("VIDIOC_QBUF failed: %s (errno=%d)", strerror(errno), errno);
@@ -761,7 +851,8 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativePushYuvToYuyvFrame(
     jint uvRowStride,
     jint uvPixelStride,
     jint rotation,
-    jboolean mirror
+    jboolean mirror,
+    jint maxInFlight
 ) {
     UvcContext* ctx = nullptr;
     {
@@ -781,7 +872,7 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativePushYuvToYuyvFrame(
     if (!ctx->is_streaming.load() || ctx->v4l2_fd < 0) return JNI_FALSE;
 
     struct v4l2_buffer buf {};
-    int idx = acquireWritableBufferLocked(ctx, buf);
+    int idx = acquireWritableBufferLocked(ctx, buf, maxInFlight);
     if (idx < 0) {
         return JNI_FALSE;
     }
@@ -793,45 +884,88 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativePushYuvToYuyvFrame(
         return JNI_FALSE;
     }
 
-    auto* dst = static_cast<uint8_t*>(ctx->buffers[idx].start);
+    auto* __restrict dst = static_cast<uint8_t*>(ctx->buffers[idx].start);
     const bool isIdentity = (rotation == 0 && !mirror && srcW == dstW && srcH == dstH);
 
     if (isIdentity) {
-        // Fast path: identical dimensions, no rotation/mirror
         for (int y = 0; y < dstH; ++y) {
-            const uint8_t* yRow = yPlane + y * yRowStride;
-            const uint8_t* uRow = uPlane + (y >> 1) * uvRowStride;
-            const uint8_t* vRow = vPlane + (y >> 1) * uvRowStride;
-            uint8_t* dstRow = dst + y * (dstW * 2);
+            const uint8_t* __restrict yRow = yPlane + y * yRowStride;
+            const uint8_t* __restrict uRow = uPlane + (y >> 1) * uvRowStride;
+            const uint8_t* __restrict vRow = vPlane + (y >> 1) * uvRowStride;
+            uint8_t* __restrict dstRow = dst + y * (dstW * 2);
 
-            for (int x = 0; x < dstW; x += 2) {
+            int x = 0;
+#if defined(__aarch64__) || defined(__ARM_NEON__)
+            if (uvPixelStride == 2 && (vPlane + 1 == uPlane)) {
+                // NV21 semi-planar source -> YUYV via NEON
+                for (; x + 16 <= dstW; x += 16) {
+                    uint8x16_t yVec = vld1q_u8(yRow + x);
+                    uint8x8x2_t vuVec = vld2_u8(vRow + x); // val[0] = V, val[1] = U
+                    uint8x8x2_t uvZip = vzip_u8(vuVec.val[1], vuVec.val[0]); // interleave U0,V0,U1,V1...
+                    uint8x16_t uvVec = vcombine_u8(uvZip.val[0], uvZip.val[1]);
+                    uint8x16x2_t yuyv;
+                    yuyv.val[0] = yVec;
+                    yuyv.val[1] = uvVec;
+                    vst2q_u8(dstRow + x * 2, yuyv);
+                }
+            } else if (uvPixelStride == 2 && (uPlane + 1 == vPlane)) {
+                // NV12 semi-planar source -> YUYV via NEON
+                for (; x + 16 <= dstW; x += 16) {
+                    uint8x16_t yVec = vld1q_u8(yRow + x);
+                    uint8x16_t uvVec = vld1q_u8(uRow + x); // already U0,V0,U1,V1...
+                    uint8x16x2_t yuyv;
+                    yuyv.val[0] = yVec;
+                    yuyv.val[1] = uvVec;
+                    vst2q_u8(dstRow + x * 2, yuyv);
+                }
+            }
+#endif
+            for (; x < dstW; x += 2) {
                 int uvOffset = (x >> 1) * uvPixelStride;
-                uint8_t u = uRow[uvOffset];
-                uint8_t v = vRow[uvOffset];
                 dstRow[x * 2 + 0] = yRow[x];
-                dstRow[x * 2 + 1] = u;
+                dstRow[x * 2 + 1] = uRow[uvOffset];
                 dstRow[x * 2 + 2] = yRow[x + 1];
-                dstRow[x * 2 + 3] = v;
+                dstRow[x * 2 + 3] = vRow[uvOffset];
             }
         }
     } else {
-        for (int y = 0; y < dstH; ++y) {
-            uint8_t* dstRow = dst + y * (dstW * 2);
-            for (int x = 0; x < dstW; x += 2) {
-                int sx0, sy0, sx1, sy1;
-                mapDestToSrc(x, y, dstW, dstH, srcW, srcH, rotation, mirror == JNI_TRUE, sx0, sy0);
-                mapDestToSrc(x + 1, y, dstW, dstH, srcW, srcH, rotation, mirror == JNI_TRUE, sx1, sy1);
+        bool swappedAxes = false;
+        std::vector<int> lutX, lutY;
+        buildCoordinateLuts(dstW, dstH, srcW, srcH, rotation, mirror == JNI_TRUE, swappedAxes, lutX, lutY);
 
-                uint8_t y0 = yPlane[sy0 * yRowStride + sx0];
-                uint8_t y1 = yPlane[sy1 * yRowStride + sx1];
-                int uvIdx = (sy0 >> 1) * uvRowStride + (sx0 >> 1) * uvPixelStride;
-                uint8_t u = uPlane[uvIdx];
-                uint8_t v = vPlane[uvIdx];
+        if (!swappedAxes) {
+            for (int y = 0; y < dstH; ++y) {
+                const int sy = lutY[y];
+                const uint8_t* __restrict yRow = yPlane + sy * yRowStride;
+                const uint8_t* __restrict uRow = uPlane + (sy >> 1) * uvRowStride;
+                const uint8_t* __restrict vRow = vPlane + (sy >> 1) * uvRowStride;
+                uint8_t* __restrict dstRow = dst + y * (dstW * 2);
 
-                dstRow[x * 2 + 0] = y0;
-                dstRow[x * 2 + 1] = u;
-                dstRow[x * 2 + 2] = y1;
-                dstRow[x * 2 + 3] = v;
+                for (int x = 0; x < dstW; x += 2) {
+                    const int sx0 = lutX[x];
+                    const int sx1 = lutX[x + 1];
+                    const int uvIdx = (sx0 >> 1) * uvPixelStride;
+                    dstRow[x * 2 + 0] = yRow[sx0];
+                    dstRow[x * 2 + 1] = uRow[uvIdx];
+                    dstRow[x * 2 + 2] = yRow[sx1];
+                    dstRow[x * 2 + 3] = vRow[uvIdx];
+                }
+            }
+        } else {
+            for (int y = 0; y < dstH; ++y) {
+                const int sx = lutY[y];
+                const int uvColOffset = (sx >> 1) * uvPixelStride;
+                uint8_t* __restrict dstRow = dst + y * (dstW * 2);
+
+                for (int x = 0; x < dstW; x += 2) {
+                    const int sy0 = lutX[x];
+                    const int sy1 = lutX[x + 1];
+                    const int uvIdx = (sy0 >> 1) * uvRowStride + uvColOffset;
+                    dstRow[x * 2 + 0] = yPlane[sy0 * yRowStride + sx];
+                    dstRow[x * 2 + 1] = uPlane[uvIdx];
+                    dstRow[x * 2 + 2] = yPlane[sy1 * yRowStride + sx];
+                    dstRow[x * 2 + 3] = vPlane[uvIdx];
+                }
             }
         }
     }
@@ -872,16 +1006,15 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeYuv420ToNv21(
     const auto* vPlane = static_cast<const uint8_t*>(env->GetDirectBufferAddress(vBuf));
     if (!yPlane || !uPlane || !vPlane) return;
 
-    auto* nv21 = static_cast<uint8_t*>(env->GetPrimitiveArrayCritical(outNv21, nullptr));
+    auto* __restrict nv21 = static_cast<uint8_t*>(env->GetPrimitiveArrayCritical(outNv21, nullptr));
     if (!nv21) return;
 
-    uint8_t* dstY = nv21;
-    uint8_t* dstVU = nv21 + (dstW * dstH);
+    uint8_t* __restrict dstY = nv21;
+    uint8_t* __restrict dstVU = nv21 + (dstW * dstH);
 
     const bool isIdentity = (rotation == 0 && !mirror && srcW == dstW && srcH == dstH);
 
     if (isIdentity) {
-        // Ultra-fast memcpy/interleave path when Camera2 capture size matches UVC output size
         if (yRowStride == dstW) {
             memcpy(dstY, yPlane, static_cast<size_t>(dstW) * dstH);
         } else {
@@ -892,14 +1025,41 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeYuv420ToNv21(
 
         const int chromaH = dstH >> 1;
         const int chromaW = dstW >> 1;
-        if (uvPixelStride == 2 && (vPlane + 1 == uPlane) && uvRowStride == dstW) {
-            // Already tightly packed NV21 in Camera2 buffer!
-            memcpy(dstVU, vPlane, static_cast<size_t>(dstW) * chromaH);
-        } else {
+        if (uvPixelStride == 2 && (vPlane + 1 == uPlane)) {
+            // Hardware buffer is already NV21 (V followed by U)
+            if (uvRowStride == dstW) {
+                memcpy(dstVU, vPlane, static_cast<size_t>(dstW) * chromaH);
+            } else {
+                for (int cy = 0; cy < chromaH; ++cy) {
+                    memcpy(dstVU + cy * dstW, vPlane + cy * uvRowStride, dstW);
+                }
+            }
+        } else if (uvPixelStride == 2 && (uPlane + 1 == vPlane)) {
+            // Hardware buffer is NV12 (U followed by V) — swap pairs using ARM NEON
             for (int cy = 0; cy < chromaH; ++cy) {
-                const uint8_t* uRow = uPlane + cy * uvRowStride;
-                const uint8_t* vRow = vPlane + cy * uvRowStride;
-                uint8_t* vuRow = dstVU + cy * dstW;
+                const uint8_t* __restrict uvSrc = uPlane + cy * uvRowStride;
+                uint8_t* __restrict vuDst = dstVU + cy * dstW;
+                int cx = 0;
+#if defined(__aarch64__) || defined(__ARM_NEON__)
+                for (; cx + 16 <= chromaW; cx += 16) {
+                    uint8x16x2_t uv = vld2q_u8(uvSrc + cx * 2);
+                    uint8x16x2_t vu;
+                    vu.val[0] = uv.val[1]; // V
+                    vu.val[1] = uv.val[0]; // U
+                    vst2q_u8(vuDst + cx * 2, vu);
+                }
+#endif
+                for (; cx < chromaW; ++cx) {
+                    vuDst[cx * 2 + 0] = uvSrc[cx * 2 + 1];
+                    vuDst[cx * 2 + 1] = uvSrc[cx * 2 + 0];
+                }
+            }
+        } else {
+            // Planar or arbitrary stride
+            for (int cy = 0; cy < chromaH; ++cy) {
+                const uint8_t* __restrict uRow = uPlane + cy * uvRowStride;
+                const uint8_t* __restrict vRow = vPlane + cy * uvRowStride;
+                uint8_t* __restrict vuRow = dstVU + cy * dstW;
                 for (int cx = 0; cx < chromaW; ++cx) {
                     int idx = cx * uvPixelStride;
                     vuRow[cx * 2 + 0] = vRow[idx];
@@ -908,20 +1068,47 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeYuv420ToNv21(
             }
         }
     } else {
-        // General path with rotation (0/90/180/270), mirror, and aspect-preserving crop/scale
-        for (int y = 0; y < dstH; ++y) {
-            uint8_t* yOutRow = dstY + y * dstW;
-            uint8_t* vuOutRow = (y & 1) == 0 ? (dstVU + (y >> 1) * dstW) : nullptr;
+        // Fast 1D LUT-driven path for rotation (0/90/180/270), mirror, and aspect-preserving crop/scale
+        bool swappedAxes = false;
+        std::vector<int> lutX, lutY;
+        buildCoordinateLuts(dstW, dstH, srcW, srcH, rotation, mirror == JNI_TRUE, swappedAxes, lutX, lutY);
 
-            for (int x = 0; x < dstW; ++x) {
-                int sx, sy;
-                mapDestToSrc(x, y, dstW, dstH, srcW, srcH, rotation, mirror == JNI_TRUE, sx, sy);
-                yOutRow[x] = yPlane[sy * yRowStride + sx];
+        if (!swappedAxes) {
+            for (int y = 0; y < dstH; ++y) {
+                const int sy = lutY[y];
+                const uint8_t* __restrict ySrcRow = yPlane + sy * yRowStride;
+                uint8_t* __restrict yOutRow = dstY + y * dstW;
 
-                if (vuOutRow != nullptr && (x & 1) == 0) {
-                    int uvIdx = (sy >> 1) * uvRowStride + (sx >> 1) * uvPixelStride;
-                    vuOutRow[x + 0] = vPlane[uvIdx];
-                    vuOutRow[x + 1] = uPlane[uvIdx];
+                for (int x = 0; x < dstW; ++x) {
+                    yOutRow[x] = ySrcRow[lutX[x]];
+                }
+
+                if ((y & 1) == 0) {
+                    const uint8_t* __restrict uSrcRow = uPlane + (sy >> 1) * uvRowStride;
+                    const uint8_t* __restrict vSrcRow = vPlane + (sy >> 1) * uvRowStride;
+                    uint8_t* __restrict vuOutRow = dstVU + (y >> 1) * dstW;
+                    for (int x = 0; x < dstW; x += 2) {
+                        const int uvIdx = (lutX[x] >> 1) * uvPixelStride;
+                        vuOutRow[x + 0] = vSrcRow[uvIdx];
+                        vuOutRow[x + 1] = uSrcRow[uvIdx];
+                    }
+                }
+            }
+        } else {
+            for (int y = 0; y < dstH; ++y) {
+                const int sx = lutY[y];
+                const int uvColOffset = (sx >> 1) * uvPixelStride;
+                uint8_t* __restrict yOutRow = dstY + y * dstW;
+                uint8_t* __restrict vuOutRow = ((y & 1) == 0) ? (dstVU + (y >> 1) * dstW) : nullptr;
+
+                for (int x = 0; x < dstW; ++x) {
+                    const int sy = lutX[x];
+                    yOutRow[x] = yPlane[sy * yRowStride + sx];
+                    if (vuOutRow != nullptr && (x & 1) == 0) {
+                        const int uvIdx = (sy >> 1) * uvRowStride + uvColOffset;
+                        vuOutRow[x + 0] = vPlane[uvIdx];
+                        vuOutRow[x + 1] = uPlane[uvIdx];
+                    }
                 }
             }
         }

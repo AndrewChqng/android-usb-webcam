@@ -57,10 +57,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.update { it.copy(missingCharacterDevice = missing, isBusyConfiguringGadget = false) }
 
                 if (videoNode != null) {
+                    val actualMaxPacket = characterDeviceManager.getBoundStreamingMaxPacket(gadgetPrefs)
                     WebcamForegroundService.start(
                         getApplication(),
                         videoNode,
-                        gadgetPrefs.uvcMaxPacketSize
+                        actualMaxPacket
                     )
                 }
             } catch (e: Exception) {
@@ -116,6 +117,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setRotation(degrees: Int) = webcamController.setRotation(degrees)
     fun setMirrorHorizontal(mirror: Boolean) = webcamController.setMirrorHorizontal(mirror)
     fun setJpegQuality(quality: Int) = webcamController.setJpegQuality(quality)
+    fun setMaxInFlightBuffers(count: Int) = webcamController.setMaxInFlightBuffers(count)
+    fun setTargetFpsCap(fpsCap: Int) = webcamController.setTargetFpsCap(fpsCap)
+    fun setAutoFocusEnabled(enabled: Boolean) = webcamController.setAutoFocusEnabled(enabled)
+    fun setLockConstantFps(locked: Boolean) = webcamController.setLockConstantFps(locked)
+    fun setVideoStabilization(enabled: Boolean) = webcamController.setVideoStabilization(enabled)
+    fun setZoomRatio(zoom: Float) = webcamController.setZoomRatio(zoom)
+    fun setExposureEv(ev: Float) = webcamController.setExposureEv(ev)
     fun setPreviewEnabled(enabled: Boolean) = webcamController.setPreviewEnabled(enabled)
     fun attachPreviewSurface(surface: Surface?) = webcamController.attachPreviewSurface(surface)
 }

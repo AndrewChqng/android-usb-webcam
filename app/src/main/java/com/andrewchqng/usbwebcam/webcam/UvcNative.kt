@@ -12,11 +12,18 @@ object UvcNative {
         System.loadLibrary("usb_webcam")
     }
 
-    external fun nativeOpen(devicePath: String, maxPayloadSize: Int = 3072): Int
+    external fun nativeOpen(devicePath: String, maxPayloadSize: Int = 1024): Int
     external fun nativeRunEventLoop(callback: UvcEventCallback)
     external fun nativeClose()
 
-    external fun nativePushMjpegFrame(directJpegBuffer: ByteBuffer, length: Int): Boolean
+    /**
+     * Drains completed V4L2 buffers via non-blocking VIDIOC_DQBUF and checks if a write slot
+     * is available without exceeding [maxInFlight] queued kernel buffers.
+     * Calling this before YUV/JPEG encoding avoids wasted CPU work and prevents buffer tearing.
+     */
+    external fun nativeCanAcceptFrame(maxInFlight: Int): Boolean
+
+    external fun nativePushMjpegFrame(directJpegBuffer: ByteBuffer, length: Int, maxInFlight: Int): Boolean
 
     external fun nativePushYuvToYuyvFrame(
         yBuf: ByteBuffer,
@@ -28,7 +35,8 @@ object UvcNative {
         uvRowStride: Int,
         uvPixelStride: Int,
         rotation: Int,
-        mirror: Boolean
+        mirror: Boolean,
+        maxInFlight: Int
     ): Boolean
 
     external fun nativeYuv420ToNv21(

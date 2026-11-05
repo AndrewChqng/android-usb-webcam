@@ -29,9 +29,18 @@
     <string name="dynamic_colors_title">Dynamic colors</string>
 
     <string name="uvc_maxpacket_title">UVC Isochronous Max Packet Size</string>
-    <string name="uvc_maxpacket_3072" translatable="false">3072 bytes (High-Bandwidth 1080p/720p)</string>
-    <string name="uvc_maxpacket_2048" translatable="false">2048 bytes (Medium Bandwidth)</string>
-    <string name="uvc_maxpacket_1024" translatable="false">1024 bytes (Compatibility Mode)</string>
+    <string name="uvc_maxpacket_1024" translatable="false">1024 bytes (Recommended — Tear-Free DWC3 DMA)</string>
+    <string name="uvc_maxpacket_2048" translatable="false">2048 bytes (Medium Bandwidth — 2x Microframe)</string>
+    <string name="uvc_maxpacket_3072" translatable="false">3072 bytes (Max Burst — 3x Microframe)</string>
+
+    <string name="uvc_maxburst_title">USB SuperSpeed MaxBurst (0–15)</string>
+    <string name="uvc_maxburst_0" translatable="false">0 (Standard USB 2.0 / 3.0 Default)</string>
+    <string name="uvc_maxburst_4" translatable="false">4 (SuperSpeed Medium Burst)</string>
+    <string name="uvc_maxburst_8" translatable="false">8 (SuperSpeed High Burst)</string>
+    <string name="uvc_maxburst_15" translatable="false">15 (SuperSpeed Maximum Burst)</string>
+
+    <string name="boost_usb_irq_title">Real-time USB Controller IRQ Priority (SCHED_FIFO)</string>
+    <string name="boost_usb_irq_summary">Elevates irq/*-dwc3 kernel thread to SCHED_FIFO prio 50 (-20 nice) to prevent vendor schedulers from starving USB isochronous transfers.</string>
 
     <string name="experimental_mode_title">Experimental Mode</string>
     <string name="experimental_mode_summary">Enable experimental gadget actions and diagnostics.</string>

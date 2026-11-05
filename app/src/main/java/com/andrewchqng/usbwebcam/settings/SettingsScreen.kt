@@ -14,11 +14,13 @@ import cafe.adriel.voyager.core.screen.Screen
 import cafe.adriel.voyager.navigator.Navigator
 import com.andrewchqng.usbwebcam.R
 import com.andrewchqng.usbwebcam.settings.AppSettings.AppThemePreference
+import com.andrewchqng.usbwebcam.settings.AppSettings.BoostUsbIrqPreference
 import com.andrewchqng.usbwebcam.settings.AppSettings.DynamicColors
 import com.andrewchqng.usbwebcam.settings.AppSettings.ExperimentalMode
 import com.andrewchqng.usbwebcam.settings.AppSettings.PreferenceCategory
 import com.andrewchqng.usbwebcam.settings.AppSettings.PureUvcOnlyModePreference
 import com.andrewchqng.usbwebcam.settings.AppSettings.UsbGadgetPath
+import com.andrewchqng.usbwebcam.settings.AppSettings.UvcMaxBurstPreference
 import com.andrewchqng.usbwebcam.settings.AppSettings.UvcMaxPacketPreference
 import com.andrewchqng.usbwebcam.settings.AppSettings.UvcVideoDevicePath
 import com.andrewchqng.usbwebcam.ui.theme.PaddingNormal
@@ -57,8 +59,10 @@ fun SettingsPage() {
         PreferenceCategory(
             title = stringResource(R.string.uvc_gadget_header),
         ) {
-            PureUvcOnlyModePreference()
             UvcMaxPacketPreference()
+            UvcMaxBurstPreference()
+            BoostUsbIrqPreference()
+            PureUvcOnlyModePreference()
         }
 
         PreferenceCategory(
@@ -135,6 +139,15 @@ private object AppSettings {
     }
 
     @Composable
+    fun BoostUsbIrqPreference() {
+        SwitchPreference(
+            title = stringResource(R.string.boost_usb_irq_title),
+            summary = stringResource(R.string.boost_usb_irq_summary),
+            preference = AppPreference.BoostUsbIrqPriority
+        )
+    }
+
+    @Composable
     fun UvcMaxPacketPreference(
         enabled: Boolean = true,
         settingsViewModel: SettingsViewModel = viewModel()
@@ -149,6 +162,25 @@ private object AppSettings {
             selected = selected,
             onPreferenceClicked = { opt ->
                 settingsViewModel.setPreference(AppPreference.UvcMaxPacketSizePref, opt)
+            }
+        )
+    }
+
+    @Composable
+    fun UvcMaxBurstPreference(
+        enabled: Boolean = true,
+        settingsViewModel: SettingsViewModel = viewModel()
+    ) {
+        val preferencesState by settingsViewModel.userPreferencesFlow.collectAsState()
+        val selected = preferencesState.uvcMaxBurstOption
+        val options = UvcMaxBurstOption.values
+        BasicListPreference(
+            title = stringResource(R.string.uvc_maxburst_title),
+            options = options,
+            enabled = enabled,
+            selected = selected,
+            onPreferenceClicked = { opt ->
+                settingsViewModel.setPreference(AppPreference.UvcMaxBurstPref, opt)
             }
         )
     }

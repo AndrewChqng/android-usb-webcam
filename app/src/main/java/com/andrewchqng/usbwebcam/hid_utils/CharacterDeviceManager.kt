@@ -111,7 +111,9 @@ class CharacterDeviceManager private constructor(private val application: Applic
     private fun createUvcGadgetViaRootShell(prefs: GadgetUserPreferences) {
         val gPath = prefs.usbGadgetPath.path.ifBlank { "/config/usb_gadget/g1" }
         val maxPacket = prefs.uvcMaxPacketSize.coerceIn(1024, 3072)
+        val maxBurst = prefs.uvcMaxBurst.coerceIn(0, 15)
         val keepAdb = if (prefs.disableGadgetFunctionsDuringConfiguration) "0" else "1"
+        val boostIrq = if (prefs.boostUsbIrqPriority) "1" else "0"
 
         val script = """
             G="$gPath"
@@ -177,7 +179,7 @@ class CharacterDeviceManager private constructor(private val application: Applic
             mkdir -p "${'$'}UVC"
 
             echo "$maxPacket" > "${'$'}UVC/streaming_maxpacket" 2>/dev/null || true
-            echo "0" > "${'$'}UVC/streaming_maxburst" 2>/dev/null || true
+            echo "$maxBurst" > "${'$'}UVC/streaming_maxburst" 2>/dev/null || true
             echo "1" > "${'$'}UVC/streaming_interval" 2>/dev/null || true
 
             mkdir -p "${'$'}UVC/control/header/h"
@@ -257,8 +259,14 @@ class CharacterDeviceManager private constructor(private val application: Applic
             ln -s "${'$'}CFG" "${'$'}G/os_desc/b.1" 2>/dev/null || true
 
             UDC_NAME=${'$'}(ls /sys/class/udc | head -n 1)
-            echo "${'$'}UDC_NAME" > "${'$'}G/UDC" 2>/dev/null || true
-            BOUND=${'$'}(cat "${'$'}G/UDC" 2>/dev/null)
+            for attempt in 1 2 3 4 5 6 7 8; do
+                echo "${'$'}UDC_NAME" > "${'$'}G/UDC" 2>/dev/null || true
+                BOUND=${'$'}(cat "${'$'}G/UDC" 2>/dev/null)
+                if [ -n "${'$'}BOUND" ] && [ "${'$'}BOUND" != "none" ]; then
+                    break
+                fi
+                sleep 0.05
+            done
             if [ -z "${'$'}BOUND" ] || [ "${'$'}BOUND" = "none" ]; then
                 echo "" > "${'$'}G/UDC" 2>/dev/null || true
                 rm -f "${'$'}G/os_desc/b.1" "${'$'}CFG/uvc.0" 2>/dev/null || true
@@ -268,12 +276,27 @@ class CharacterDeviceManager private constructor(private val application: Applic
                 ln -s "${'$'}CFG" "${'$'}G/os_desc/b.1" 2>/dev/null || true
                 echo "${'$'}UDC_NAME" > "${'$'}G/UDC" 2>/dev/null || true
             fi
+
+            if [ "$boostIrq" = "1" ]; then
+                for p in ${'$'}(ps -A -o pid,comm | grep "irq/.*dwc3" | awk '{print ${'$'}1}'); do
+                    chrt -f -p "${'$'}p" 50 2>/dev/null || true
+                    renice -n -20 -p "${'$'}p" 2>/dev/null || true
+                done
+            fi
         """.trimIndent()
 
         val res = Shell.cmd(script).exec()
         if (!res.isSuccess) {
             Timber.w("createUvcGadgetViaRootShell warning: out=${res.out} err=${res.err}")
         }
+    }
+
+    fun getBoundStreamingMaxPacket(prefs: GadgetUserPreferences): Int {
+        val gPath = prefs.usbGadgetPath.path.ifBlank { "/config/usb_gadget/g1" }
+        return runCatching {
+            val out = Shell.cmd("cat \"$gPath/functions/uvc.0/streaming_maxpacket\" 2>/dev/null").exec().out
+            out.firstOrNull()?.trim()?.toIntOrNull() ?: prefs.uvcMaxPacketSize
+        }.getOrDefault(prefs.uvcMaxPacketSize)
     }
 
     /**

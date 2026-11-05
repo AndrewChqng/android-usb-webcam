@@ -74,10 +74,12 @@ Any rooted Android 8.0+ (API 26+) device whose kernel has **`CONFIG_USB_CONFIGFS
 - **Battery-Saving Headless Streaming**:
   - Operates inside an Android Foreground Service (`foregroundServiceType="camera"`) holding a partial wake lock, allowing continuous high-framerate streaming with the phone display powered completely off.
   - Viewfinder preview is disabled by default to eliminate GPU, composition, and display power draw, but can be enabled on-demand for framing.
-- **Rich Camera & Lens Controls**:
+- **Rich Camera2 ISP, Focus & Performance Controls**:
   - Switch between any physical sensor (rear main, ultra-wide, telephoto, front-facing camera).
-  - On-the-fly orientation adjustment (0°, 90°, 180°, 270°) and horizontal mirroring.
-  - Real-time MJPEG quality slider (50% – 95%) and live FPS / format telemetry.
+  - **Target FPS Cap** (`Auto`, `60`, `30`, `15 FPS`) and **V4L2 Ring Queue Mode** (`1 buf Ultra-Low Latency`, `2 bufs Tear-Free Balanced`, `3 bufs Max Smoothness`).
+  - **Camera2 ISP Controls**: Continuous Autofocus vs. Infinity Focus Lock, Constant Framerate AE Priority, Video Stabilization (EIS) toggle, Digital Zoom (`1.0x–4.0x`), and Exposure Compensation (`-2.0 to +2.0 EV`).
+  - On-the-fly orientation adjustment (`0°`, `90°`, `180°`, `270°`), horizontal mirroring, MJPEG quality slider (`50%–95%`), and live telemetry (`Actual FPS`, `ms/frame`, `KB/frame`, `USB packet size`).
+  - **Real-Time USB Controller IRQ Boost**: Automatically elevates `irq/*-dwc3` kernel threads to `SCHED_FIFO` priority 50 (`-20` nice) to prevent OEM schedulers from starving USB isochronous TRB rings.
 
 ---
 
