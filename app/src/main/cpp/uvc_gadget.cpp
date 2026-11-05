@@ -456,7 +456,7 @@ inline void mapDestToSrc(
 } // namespace
 
 extern "C" JNIEXPORT jint JNICALL
-Java_me_arianb_usb_1hid_1client_webcam_UvcNative_nativeOpen(
+Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeOpen(
     JNIEnv* env,
     jobject /* thiz */,
     jstring jDevicePath,
@@ -515,7 +515,7 @@ Java_me_arianb_usb_1hid_1client_webcam_UvcNative_nativeOpen(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_me_arianb_usb_1hid_1client_webcam_UvcNative_nativeRunEventLoop(
+Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeRunEventLoop(
     JNIEnv* env,
     jobject /* thiz */,
     jobject callback
@@ -637,7 +637,7 @@ Java_me_arianb_usb_1hid_1client_webcam_UvcNative_nativeRunEventLoop(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_me_arianb_usb_1hid_1client_webcam_UvcNative_nativeClose(
+Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeClose(
     JNIEnv* /* env */,
     jobject /* thiz */
 ) {
@@ -696,7 +696,7 @@ int acquireWritableBufferLocked(UvcContext* ctx, struct v4l2_buffer& buf) {
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_me_arianb_usb_1hid_1client_webcam_UvcNative_nativePushMjpegFrame(
+Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativePushMjpegFrame(
     JNIEnv* env,
     jobject /* thiz */,
     jobject jDirectJpegBuf,
@@ -749,7 +749,7 @@ Java_me_arianb_usb_1hid_1client_webcam_UvcNative_nativePushMjpegFrame(
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_me_arianb_usb_1hid_1client_webcam_UvcNative_nativePushYuvToYuyvFrame(
+Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativePushYuvToYuyvFrame(
     JNIEnv* env,
     jobject /* thiz */,
     jobject yBuf,
@@ -850,7 +850,7 @@ Java_me_arianb_usb_1hid_1client_webcam_UvcNative_nativePushYuvToYuyvFrame(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_me_arianb_usb_1hid_1client_webcam_UvcNative_nativeYuv420ToNv21(
+Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeYuv420ToNv21(
     JNIEnv* env,
     jobject /* thiz */,
     jobject yBuf,

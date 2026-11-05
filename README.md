@@ -1,14 +1,39 @@
 # Android USB Webcam Client (UVC Gadget)
 
 [![Android CI](https://img.shields.io/badge/Platform-Android%208.0%2B%20(API%2026%2B)-green.svg)](https://developer.android.com)
+[![Package](https://img.shields.io/badge/Package-com.andrewchqng.usbwebcam-purple.svg)](https://github.com/AndrewChqng/android-usb-webcam)
 [![Kernel](https://img.shields.io/badge/Kernel-CONFIG__USB__CONFIGFS__F__UVC-blue.svg)](https://kernel.org)
 [![License](https://img.shields.io/badge/License-GPLv3-yellow.svg)](LICENSE)
 
-A root-enabled Android application that exposes your phone's physical cameras (via Camera2 API) as a hardware-level **USB Video Class (UVC 1.1)** webcam (`/dev/videoX`) directly over Linux ConfigFS.
+A root-enabled Android application (`com.andrewchqng.usbwebcam`) that exposes your phone's physical cameras (via Camera2 API) as a hardware-level **USB Video Class (UVC 1.1)** webcam (`/dev/videoX`) directly over Linux ConfigFS.
 
-Because it presents itself as a true standard USB webcam, it requires **zero drivers or companion software** on the host computer. It works out-of-the-box with **Linux, Windows, macOS, ChromeOS**, and applications like **OBS Studio, Zoom, Google Meet, Microsoft Teams, Discord, and WebRTC browsers**.
+Because it presents itself as a true standard USB webcam, it requires **zero drivers or companion software** on the host computer. It works out-of-the-box with **Linux, Windows, macOS, ChromeOS**, and applications like **OBS Studio, Zoom, Google Meet, Microsoft Teams, Discord, ffplay, and WebRTC browsers**.
 
-Forked and repurposed from the ConfigFS and `libsu` `RootService` foundation of [`Arian04/android-hid-client`](https://github.com/Arian04/android-hid-client).
+Forked and repurposed from the ConfigFS and `libsu` foundation of [`Arian04/android-hid-client`](https://github.com/Arian04/android-hid-client).
+
+---
+
+## 📱 Tested Hardware & Device Compatibility
+
+### ✅ Verified & Tested On
+- **OnePlus 12 (`CPH2581`)**
+  - **SoC / USB Controller**: Qualcomm Snapdragon 8 Gen 3 (`SM8650`, `pineapple`) / Synopsys DWC3 (`a600000.dwc3`)
+  - **OS & Kernel**: OxygenOS 14 (Android 14), GKI Kernel `6.1.68-android14-11`
+  - **Root Manager**: KernelSU (`ksud`)
+  - **Verified Streaming Modes (into Linux x86_64 host via `uvcvideo` / V4L2 / PipeWire with simultaneous ADB active)**:
+    - `1920×1080` MJPEG @ 30 fps (~41 KB/frame)
+    - `1280×720` MJPEG @ 30 fps (~16.6 KB/frame)
+    - `640×480` Uncompressed YUYV @ ~24 fps (614,400 B/frame)
+
+### 🔮 Likely Compatible Devices
+Any rooted Android 8.0+ (API 26+) device whose kernel has **`CONFIG_USB_CONFIGFS=y`** and **`CONFIG_USB_CONFIGFS_F_UVC=y`** enabled:
+
+| Device Category | Examples | Compatibility Notes |
+| :--- | :--- | :--- |
+| **Android 13 / 14 / 15+ GKI 2.0 Devices (Kernel 5.10, 5.15, 6.1, 6.6+)** | **OnePlus** 11 / 12 / 13 / Open<br>**Google Pixel** 6 / 7 / 8 / 9 series<br>**Samsung Galaxy** S22 / S23 / S24 series<br>**Xiaomi** 12 / 13 / 14 series<br>**Nothing Phone** (1) / (2)<br>**ASUS** ROG Phone / Zenfone, **Motorola** Edge | **High / Out-of-the-box**: Google mandated `CONFIG_USB_CONFIGFS_F_UVC=y` in Android Generic Kernel Image (GKI) trees to support Android 14's UVC gadget subsystem. Even on OEM ROMs (like OxygenOS, One UI, HyperOS) that hide or omit Google's system webcam service, the underlying `f_uvc` kernel driver is compiled in and works with this app. |
+| **Older Devices (Android 8.0 – 12, Kernel 4.9 / 4.14 / 4.19 / 5.4)** | OnePlus 6 / 7 / 8 / 9, Pixel 3 / 4 / 5, Xiaomi Mi 9 / 10 / 11, Samsung S9 / S10 / S20 / S21 | **Kernel-dependent**: Works if the stock kernel or a custom kernel (e.g., LineageOS, NetHunter, Sultan, Kirisakura) includes `CONFIG_USB_CONFIGFS_F_UVC=y`. Use the in-app **Troubleshooting** screen to check your kernel config in one tap. |
+| **Root Solutions** | **KernelSU** (`ksud`), **Magisk** (`magiskpolicy`), **APatch** (`apd`) | Automatically detects your active root manager to run ConfigFS setup and inject live SELinux policies (`video_device` / `device` `chr_file`). |
+| **Host Operating Systems** | **Linux** (`uvcvideo` / V4L2 / PipeWire)<br>**Windows 10 / 11** (`usbvideo.sys`)<br>**macOS** & **ChromeOS** | **100% Plug-and-Play**: Uses standard UVC 1.1 descriptors with IAD (`0xEF / 0x02 / 0x01`). No host drivers or ADB forwarding required. |
 
 ---
 
@@ -23,7 +48,7 @@ Forked and repurposed from the ConfigFS and `libsu` `RootService` foundation of 
 3. **Start Streaming**:
    - Connect your phone to your computer with a USB cable.
    - Tap **"Start USB Webcam"**.
-   - Open your favorite camera software on your computer (e.g. `ffplay /dev/video0`, OBS Studio, Windows Camera, or Photo Booth) and select **"USB Webcam Client"**!
+   - Open your favorite camera software on your computer (e.g. `ffplay /dev/video0`, OBS Studio, Windows Camera, or Photo Booth) and select the USB camera!
 
 ---
 
@@ -87,14 +112,13 @@ flowchart TD
         FUVC --> V4L2Node["/dev/videoX (V4L2 Output Node)"]
     end
 
-    subgraph App["USB Webcam App (me.arianb.usb_webcam_client)"]
-        RootSvc["UsbGadgetService (libsu RootService)"]
-        DevMgr["CharacterDeviceManager (SELinux & Perms)"]
+    subgraph App["USB Webcam App (com.andrewchqng.usbwebcam)"]
+        DevMgr["CharacterDeviceManager (ConfigFS, SELinux & Perms)"]
         JNI["uvc_gadget.cpp (Native V4L2 Event Loop)"]
         CamCtrl["WebcamController (Camera2 API)"]
         FGS["WebcamForegroundService (WakeLock & Background)"]
 
-        RootSvc -->|"1. Setup ConfigFS & UDC"| ConfigFS
+        DevMgr -->|"1. Setup ConfigFS & UDC"| ConfigFS
         DevMgr -->|"2. Detect node & patch SELinux"| V4L2Node
         JNI <-->|"3. ioctl UVCIOC_SEND_RESPONSE & mmap VIDIOC_QBUF"| V4L2Node
         CamCtrl -->|"4. YUV420 Frames (NEON convert & JPEG compress)"| JNI
@@ -104,24 +128,20 @@ flowchart TD
 
 ---
 
-## 🧩 Technical Deep Dive
+## 🧩 Technical Deep Dive & Kernel Quirks Handled
 
-### 1. ConfigFS Descriptor Configuration (`UsbGadgetService.kt`)
-The root service manages the ConfigFS hierarchy under `/config/usb_gadget/g1/functions/uvc.0`:
-- **Control Interface**: Defines standard UVC 1.1 VideoControl descriptors (`control/header/h` linked to `control/class/fs/h` and `control/class/ss/h`).
-- **Streaming Formats**:
-  - `streaming/mjpeg/m`: MJPEG format descriptor with 3 frame sizes (360p, 720p, 1080p) supporting 60, 30, and 15 fps intervals.
-  - `streaming/uncompressed/u`: Uncompressed YUY2 format descriptor with 3 frame sizes (360p, 480p, 720p) supporting 30, 15, and 10 fps intervals.
-- **Speed Class Symlinks**: Linked to `streaming/class/fs/h`, `streaming/class/hs/h`, and `streaming/class/ss/h`.
-- **IAD (Interface Association Descriptor)**: Sets `bDeviceClass = 0xEF`, `bDeviceSubClass = 0x02`, `bDeviceProtocol = 0x01` on the root gadget descriptor so host operating systems enumerate the composite device cleanly.
+### 1. ConfigFS Descriptor Configuration & `bFrameIndex` Ordering
+The app manages the ConfigFS hierarchy under `/config/usb_gadget/g1/functions/uvc.0`:
+- **Alphabetical `d_subdirs` Frame Index Requirement**: On Linux 6.1+ `f_uvc`, `uvc_function_bind()` iterates frame subdirectories in `d_subdirs` (alphabetical) order and validates that `bFrameIndex` increments sequentially (`1, 2, 3`). Naming directories `360p`, `720p`, `1080p` causes `1080p` (`bFrameIndex=3`) to sort first alphabetically and fail binding with `-EINVAL`. Frame directories are therefore named `f1_360p`, `f2_720p`, `f3_1080p` (MJPEG) and `f1_360p`, `f2_480p`, `f3_720p` (YUYV) so alphabetical order always matches creation order.
+- **Clean Re-binding Across Sessions**: `f_uvc` locks header reference counts (`opts->header->refcnt`) once bound. On every Start/Stop cycle, all class/header symlinks are removed and `uvc.0` subdirectories are removed with `rmdir` before recreating fresh descriptors.
+- **Preventing `init` / `adbd` UDC Race Conditions**: When `ffs.adb` is active, writing `""` to `/config/usb_gadget/g1/UDC` triggers Android `init` (`sys.usb.ffs.ready=1`) to immediately re-bind `UDC` and link `os_desc/b.1 -> configs/b.1`. Because `config_usb_cfg_link()` rejects linking `uvc.0` into `configs/b.1` while `UDC` or `os_desc/b.1` is active, `CharacterDeviceManager` prepares all `uvc.0` descriptors first and unbinds `UDC` + `os_desc/b.1` immediately prior to `ln -s functions/uvc.0 configs/b.1/uvc.0`.
 
 ### 2. DWC3 FIFO & Endpoint Optimization
-Many OEM ROMs (such as Samsung One UI) link several heavy USB functions by default (`ffs.mtp`, `ss_acm.0`, `ffs.adb`, `ss_mon.mtp`), exhausting hardware endpoints on Synopsys DesignWare Cores (DWC3). When active, `UsbGadgetService`:
-1. Saves the existing configuration state into a persistent temporary backup file (`/data/local/tmp/usb_webcam_saved_links.txt`).
-2. Temporarily unlinks MTP, ACM, and monitor endpoints from `configs/b.1/`.
-3. Links `functions/uvc.0` (as `f1`) and `functions/ffs.adb` (as `f2`).
-4. Re-binds the UDC (USB Device Controller).
-5. Restores all original vendor function symlinks seamlessly upon stopping.
+Many OEM ROMs link multiple USB functions by default (`ffs.mtp`, `ss_acm.0`, `ffs.adb`, `ss_mon.mtp`), exhausting hardware endpoints on Synopsys DesignWare Cores (DWC3). When active, the app:
+1. Saves the existing configuration state into `/data/local/tmp/usb_webcam_saved_links.txt`.
+2. Temporarily unlinks MTP, ACM, and vendor monitor endpoints from `configs/b.1/`.
+3. Links `functions/uvc.0` and `functions/ffs.adb`.
+4. Re-binds the UDC (USB Device Controller) and restores all original vendor symlinks on Stop.
 
 ### 3. V4L2 Gadget Node Auto-Discovery & SELinux
 When `f_uvc` binds to the UDC, the kernel creates a new V4L2 output node in `/sys/class/video4linux/video*`. `CharacterDeviceManager` scans `/sys/class/video4linux/` for nodes whose sysfs target references the active USB gadget / UDC controller, applies `chown` to the application UID, sets permissions to `0660`, and injects live SELinux policies (`allow appdomain { device video_device } chr_file { getattr open read write ioctl map }`) via `magiskpolicy`, `ksud`, or `apd`.
@@ -130,13 +150,13 @@ When `f_uvc` binds to the UDC, the kernel creates a new V4L2 output node in `/sy
 Userspace communication with the `f_uvc` kernel driver uses standard V4L2 event notifications:
 1. **Probe & Commit Negotiation**: Listens for `UVC_EVENT_SETUP` via `VIDIOC_DQEVENT`. When the host sends `UVC_GET_CUR`, `UVC_GET_MIN`, `UVC_GET_MAX`, or `UVC_SET_CUR` for `VS_PROBE_CONTROL` / `VS_COMMIT_CONTROL`, the native daemon negotiates format and framerate and responds via `ioctl(fd, UVCIOC_SEND_RESPONSE)`.
 2. **Stream Lifecycle**:
-   - `UVC_EVENT_STREAMON`: Configures V4L2 format (`VIDIOC_S_FMT`), allocates `V4L2_MEMORY_MMAP` buffers (`VIDIOC_REQBUFS`), pre-queues initial buffers, and initiates output streaming (`VIDIOC_STREAMON`).
+   - `UVC_EVENT_STREAMON`: Configures V4L2 format (`VIDIOC_S_FMT`), allocates 4 `V4L2_MEMORY_MMAP` buffers (`VIDIOC_REQBUFS`), primes buffer `0` with a startup frame (leaving buffers `1..3` free for immediate Camera2 frames), and initiates output streaming (`VIDIOC_STREAMON`).
    - `UVC_EVENT_STREAMOFF`: Stops the stream (`VIDIOC_STREAMOFF`), unmaps buffers, and enters standby.
 3. **Zero-Copy Frame Processing**:
-   - Dequeues empty buffers with `VIDIOC_DQBUF`.
+   - Drains completed V4L2 buffers via non-blocking `VIDIOC_DQBUF` and acquires free buffer slots round-robin.
    - Converts Camera2 `YUV_420_888` planes (handling arbitrary row and pixel strides) into packed `YUYV` or compressed `NV21` with SIMD acceleration.
    - For MJPEG: compresses via Android's hardware-accelerated Skia `libjpeg-turbo` directly into pre-allocated direct byte buffers with zero heap allocation.
-   - Re-queues populated buffers with monotonic timestamps using `VIDIOC_QBUF`.
+   - Queues populated buffers with monotonic timestamps using `VIDIOC_QBUF`.
 
 ---
 
@@ -154,11 +174,12 @@ Userspace communication with the `f_uvc` kernel driver uses standard V4L2 event 
 git clone https://github.com/AndrewChqng/android-usb-webcam.git
 cd android-usb-webcam
 
-# Build Debug APK
-./gradlew assembleDebug
+# Build Debug & Release APKs
+./gradlew assembleDebug assembleRelease
 
-# Output APK location:
-# app/build/outputs/apk/debug/app-debug.apk
+# Output APK locations:
+# Debug:   app/build/outputs/apk/debug/app-debug.apk
+# Release: app/build/outputs/apk/release/app-release-unsigned.apk
 ```
 
 ---
@@ -180,7 +201,7 @@ cd android-usb-webcam
 
 - **Base Architecture & UI Framework**: Based on [`Arian04/android-hid-client`](https://github.com/Arian04/android-hid-client) (GPL-3.0).
 - **Repurposing & Implementation**: Repurposed from USB HID (keyboard/mouse) into USB Video Class (UVC) webcam with architecture, ConfigFS engineering, native V4L2 event engine, and Camera2 streaming pipeline developed in collaboration with **Antigravity (Google DeepMind)**.
-- **Disclaimer**: *This project contains experimental code that directly configures Linux kernel USB gadgets, manipulates character devices, and modifies runtime SELinux policies as root. It is intended for advanced users and developers. Use at your own risk.*
+- **Disclaimer**: *This project contains AI-assisted experimental code that directly configures Linux kernel USB gadgets, manipulates character devices, and modifies runtime SELinux policies as root. It is intended for advanced users and developers. Use at your own risk.*
 
 ---
 

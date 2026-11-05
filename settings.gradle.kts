@@ -16,5 +16,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "USB_HID_Client"
+rootProject.name = "USB_Webcam_Client"
 include(":app")

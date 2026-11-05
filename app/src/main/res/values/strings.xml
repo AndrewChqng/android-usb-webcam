@@ -46,7 +46,7 @@
     <string name="info">About</string>
     <string name="info_icon_description">App icon (Webcam)</string>
     <string name="info_description">Turns your rooted Android phone into a hardware-level USB Video Class (UVC) webcam using ConfigFS (f_uvc) and V4L2, requiring zero host drivers on Linux, Windows, or macOS.</string>
-    <string name="info_source_code_url" translatable="false">https://github.com/Arian04/android-hid-client</string>
+    <string name="info_source_code_url" translatable="false">https://github.com/AndrewChqng/android-usb-webcam</string>
 
     <!-- Help Screen -->
     <string name="help">Help</string>

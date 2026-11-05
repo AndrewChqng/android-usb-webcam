@@ -7,7 +7,7 @@
         errorLine1="            key = key.toLowerCase();"
         errorLine2="                      ~~~~~~~~~~~">
         <location
-            file="src/main/java/me/arianb/usb_hid_client/hid_utils/KeyCodeTranslation.java"
+            file="src/main/java/com/andrewchqng/usbwebcam/hid_utils/KeyCodeTranslation.java"
             line="41"
             column="23"/>
     </issue>
@@ -29,7 +29,7 @@
         errorLine1="    actions: @Composable (RowScope.() -> Unit) = {}"
         errorLine2="    ~~~~~~~">
         <location
-            file="src/main/java/me/arianb/usb_hid_client/ui/utils/Common.kt"
+            file="src/main/java/com/andrewchqng/usbwebcam/ui/utils/Common.kt"
             line="94"
             column="5"/>
     </issue>
@@ -40,7 +40,7 @@
         errorLine1="    preferences: @Composable () -> Unit"
         errorLine2="    ~~~~~~~~~~~">
         <location
-            file="src/main/java/me/arianb/usb_hid_client/settings/SettingsHelper.kt"
+            file="src/main/java/com/andrewchqng/usbwebcam/settings/SettingsHelper.kt"
             line="41"
             column="5"/>
     </issue>
@@ -51,7 +51,7 @@
         errorLine1="    trailingContent: @Composable (() -> Unit)? = null"
         errorLine2="    ~~~~~~~~~~~~~~~">
         <location
-            file="src/main/java/me/arianb/usb_hid_client/settings/SettingsHelper.kt"
+            file="src/main/java/com/andrewchqng/usbwebcam/settings/SettingsHelper.kt"
             line="178"
             column="5"/>
     </issue>

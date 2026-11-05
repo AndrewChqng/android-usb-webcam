@@ -1,0 +1,121 @@
+package com.andrewchqng.usbwebcam
+
+import android.app.Application
+import android.view.Surface
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import com.andrewchqng.usbwebcam.hid_utils.CharacterDeviceManager
+import com.andrewchqng.usbwebcam.hid_utils.DevicePath
+import com.andrewchqng.usbwebcam.hid_utils.ModifiesStateDirectly
+import com.andrewchqng.usbwebcam.settings.GadgetUserPreferences
+import com.andrewchqng.usbwebcam.settings.UserPreferencesRepository
+import com.andrewchqng.usbwebcam.shell_utils.RootStateHolder
+import com.andrewchqng.usbwebcam.webcam.WebcamController
+import com.andrewchqng.usbwebcam.webcam.WebcamForegroundService
+import com.andrewchqng.usbwebcam.webcam.WebcamStreamState
+import timber.log.Timber
+
+data class MyUiState(
+    val missingCharacterDevice: Boolean = true,
+    val isCharacterDevicePermissionsBroken: String? = null,
+    val isDeviceUnplugged: Boolean = false,
+    val isBusyConfiguringGadget: Boolean = false
+)
+
+class MainViewModel(application: Application) : AndroidViewModel(application) {
+    private val _uiState = MutableStateFlow(MyUiState())
+    val uiState: StateFlow<MyUiState> = _uiState
+
+    private val characterDeviceManager = CharacterDeviceManager.getInstance(application)
+    private val rootStateHolder = RootStateHolder.getInstance()
+    private val userPreferencesStateFlow = UserPreferencesRepository.getInstance(application).userPreferencesFlow
+    private val webcamController = WebcamController.getInstance(application)
+
+    val webcamState: StateFlow<WebcamStreamState> = webcamController.state
+
+    init {
+        webcamController.refreshCameraList()
+    }
+
+    fun startUsbWebcam() {
+        if (!rootStateHolder.hasRootPermissions()) {
+            Timber.w("Cannot start USB webcam: missing root permissions")
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusyConfiguringGadget = true) }
+            try {
+                val prefs = userPreferencesStateFlow.value
+                val gadgetPrefs = GadgetUserPreferences.fromUserPreferences(prefs)
+                val videoNode = characterDeviceManager.createCharacterDevices(gadgetPrefs)
+                val missing = (videoNode == null)
+                _uiState.update { it.copy(missingCharacterDevice = missing, isBusyConfiguringGadget = false) }
+
+                if (videoNode != null) {
+                    WebcamForegroundService.start(
+                        getApplication(),
+                        videoNode,
+                        gadgetPrefs.uvcMaxPacketSize
+                    )
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to start USB webcam")
+                _uiState.update { it.copy(isBusyConfiguringGadget = false) }
+            }
+        }
+    }
+
+    fun stopUsbWebcam() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusyConfiguringGadget = true) }
+            try {
+                WebcamForegroundService.stop(getApplication())
+                webcamController.stopUvcSession()
+                if (rootStateHolder.hasRootPermissions()) {
+                    val gadgetPrefs = GadgetUserPreferences.fromUserPreferences(userPreferencesStateFlow.value)
+                    characterDeviceManager.deleteCharacterDevices(gadgetPrefs)
+                }
+            } finally {
+                _uiState.update { it.copy(missingCharacterDevice = true, isBusyConfiguringGadget = false) }
+            }
+        }
+    }
+
+    fun createCharacterDevices() = startUsbWebcam()
+
+    fun deleteCharacterDevices() = stopUsbWebcam()
+
+    fun fixCharacterDevicePermissions(device: String) {
+        if (!rootStateHolder.hasRootPermissions()) {
+            Timber.w("Can't fix character device permissions, missing root permissions")
+            return
+        }
+        characterDeviceManager.fixCharacterDevicePermissions(device)
+    }
+
+    @OptIn(ModifiesStateDirectly::class)
+    fun characterDeviceMissing(charDevicePath: DevicePath): Boolean {
+        val result = characterDeviceManager.characterDeviceMissing(charDevicePath)
+        _uiState.update { it.copy(missingCharacterDevice = result) }
+        return result
+    }
+
+    @OptIn(ModifiesStateDirectly::class)
+    fun anyCharacterDeviceMissing(): Boolean {
+        val result = characterDeviceManager.anyCharacterDeviceMissing()
+        _uiState.update { it.copy(missingCharacterDevice = result) }
+        return result
+    }
+
+    fun selectCamera(cameraId: String) = webcamController.selectCamera(cameraId)
+    fun setRotation(degrees: Int) = webcamController.setRotation(degrees)
+    fun setMirrorHorizontal(mirror: Boolean) = webcamController.setMirrorHorizontal(mirror)
+    fun setJpegQuality(quality: Int) = webcamController.setJpegQuality(quality)
+    fun setPreviewEnabled(enabled: Boolean) = webcamController.setPreviewEnabled(enabled)
+    fun attachPreviewSurface(surface: Surface?) = webcamController.attachPreviewSurface(surface)
+}

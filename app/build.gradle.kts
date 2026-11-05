@@ -7,9 +7,9 @@ plugins {
 }
 
 android {
-    namespace = "me.arianb.usb_hid_client"
+    namespace = "com.andrewchqng.usbwebcam"
     defaultConfig {
-        applicationId = "me.arianb.usb_webcam_client"
+        applicationId = "com.andrewchqng.usbwebcam"
 
         // SDK support
         minSdk = 26
