@@ -100,6 +100,9 @@ sealed class AppPreference(val preference: PreferenceKey<*>) {
         fromStringPreference = { it },
         toStringPreference = { it }
     )
+
+    data object JpegQualityPref : IntPreferenceKey("jpeg_quality_v1", 82)
+    data object MaxInFlightBuffersPref : IntPreferenceKey("max_in_flight_buffers_v1", 1)
 }
 
 sealed class SealedString(val key: String, @StringRes val id: Int)
@@ -164,6 +167,8 @@ data class UserPreferences(
     val uvcExposedFormatsOption: UvcExposedFormatsOption = UvcExposedFormatsOption.Both,
     val customUsbProductName: String = "",
     val customUsbManufacturerName: String = "",
+    val jpegQuality: Int = 82,
+    val maxInFlightBuffers: Int = 1,
 )
 
 @Parcelize
@@ -224,6 +229,8 @@ class UserPreferencesRepository private constructor(application: Application) {
                 uvcExposedFormatsOption = AppPreference.UvcExposedFormatsPref.getValue(),
                 customUsbProductName = AppPreference.CustomUsbProductNamePref.getValue(),
                 customUsbManufacturerName = AppPreference.CustomUsbManufacturerNamePref.getValue(),
+                jpegQuality = AppPreference.JpegQualityPref.getValue(),
+                maxInFlightBuffers = AppPreference.MaxInFlightBuffersPref.getValue(),
             )
         }
 

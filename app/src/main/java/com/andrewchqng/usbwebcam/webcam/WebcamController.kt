@@ -65,7 +65,7 @@ data class WebcamStreamState(
     val rotationDegrees: Int = 0,
     val mirrorHorizontal: Boolean = false,
     val jpegQuality: Int = 82,
-    val maxInFlightBuffers: Int = 2,
+    val maxInFlightBuffers: Int = 1,
     val targetFpsCap: Int = 0, // 0 = Auto (Host negotiated), or 60 / 30 / 15
     val autoFocusEnabled: Boolean = true,
     val lockConstantFps: Boolean = true,
@@ -138,6 +138,13 @@ class WebcamController private constructor(private val application: Application)
 
     init {
         refreshCameraList()
+        val prefs = UserPreferencesRepository.getInstance(application).userPreferencesFlow.value
+        _state.update {
+            it.copy(
+                jpegQuality = prefs.jpegQuality.coerceIn(1, 100),
+                maxInFlightBuffers = prefs.maxInFlightBuffers.coerceIn(1, 4)
+            )
+        }
     }
 
     fun refreshCameraList() {
@@ -332,11 +339,25 @@ class WebcamController private constructor(private val application: Application)
     }
 
     fun setJpegQuality(quality: Int) {
-        _state.update { it.copy(jpegQuality = quality.coerceIn(50, 98)) }
+        val clamped = quality.coerceIn(1, 100)
+        _state.update { it.copy(jpegQuality = clamped) }
+        runCatching {
+            UserPreferencesRepository.getInstance(application).setPreference(
+                com.andrewchqng.usbwebcam.settings.AppPreference.JpegQualityPref,
+                clamped
+            )
+        }
     }
 
     fun setMaxInFlightBuffers(count: Int) {
-        _state.update { it.copy(maxInFlightBuffers = count.coerceIn(1, 4)) }
+        val clamped = count.coerceIn(1, 4)
+        _state.update { it.copy(maxInFlightBuffers = clamped) }
+        runCatching {
+            UserPreferencesRepository.getInstance(application).setPreference(
+                com.andrewchqng.usbwebcam.settings.AppPreference.MaxInFlightBuffersPref,
+                clamped
+            )
+        }
     }
 
     fun setTargetFpsCap(fpsCap: Int) {
