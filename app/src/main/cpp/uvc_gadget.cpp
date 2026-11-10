@@ -565,6 +565,25 @@ uint32_t countQueuedBuffersLocked(const UvcContext* ctx) {
 }
 
 /**
+ * Calculates the maximum queued kernel buffers allowed for a given queue depth preference.
+ *
+ * In USB UVC DMA, 1 buffer is always actively being streamed by DWC3 hardware DMA.
+ * Enforcing maxQueued = 1 prevents queuing a second buffer while the initial primed
+ * black frame is active, causing an unrecoverable deadlock.
+ *
+ * Adding 1 treats `maxInFlight` as the depth of buffers queued *ahead* of the active DMA buffer:
+ * - maxInFlight = 1 -> 2 buffers in kernel (1 DMA + 1 queued ahead), minimal single-frame latency.
+ * - maxInFlight = 2 -> 3 buffers in kernel (tear-free balanced).
+ * - maxInFlight = 3 -> 4 buffers in kernel (max smoothness).
+ */
+static inline uint32_t computeMaxQueuedBuffersLocked(const UvcContext* ctx, int maxInFlight) {
+    const uint32_t allowedInFlight = static_cast<uint32_t>(maxInFlight > 0 ? maxInFlight : 1) + 1;
+    return (allowedInFlight < ctx->num_buffers)
+        ? allowedInFlight
+        : (ctx->num_buffers - 1);
+}
+
+/**
  * Drains completed V4L2 buffers and selects the next write buffer using a strict round-robin index
  * (`next_write_idx`) while respecting `maxInFlight`.
  *
@@ -579,9 +598,7 @@ int acquireWritableBufferLocked(UvcContext* ctx, struct v4l2_buffer& buf, int ma
         return -1;
     }
 
-    const uint32_t maxQueued = (maxInFlight >= 1 && static_cast<uint32_t>(maxInFlight) < ctx->num_buffers)
-        ? static_cast<uint32_t>(maxInFlight)
-        : (ctx->num_buffers - 1);
+    const uint32_t maxQueued = computeMaxQueuedBuffersLocked(ctx, maxInFlight);
 
     if (countQueuedBuffersLocked(ctx) >= maxQueued) {
         return -1;
@@ -848,9 +865,7 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeCanAcceptFrame(
 
     drainCompletedBuffersLocked(ctx);
 
-    const uint32_t maxQueued = (maxInFlight >= 1 && static_cast<uint32_t>(maxInFlight) < ctx->num_buffers)
-        ? static_cast<uint32_t>(maxInFlight)
-        : (ctx->num_buffers - 1);
+    const uint32_t maxQueued = computeMaxQueuedBuffersLocked(ctx, maxInFlight);
 
     return (countQueuedBuffersLocked(ctx) < maxQueued) ? JNI_TRUE : JNI_FALSE;
 }
