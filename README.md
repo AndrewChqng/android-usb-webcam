@@ -52,10 +52,21 @@ Any rooted Android 8.0+ (API 26+) device whose kernel has **`CONFIG_USB_CONFIGFS
    - Tap **"Start USB Webcam"**.
    - Open your favorite camera software on your computer (e.g. `ffplay /dev/video0`, OBS Studio, Windows Camera, or Photo Booth) and select the USB camera!
 
+4. **(Optional) Control from your PC Web Browser**:
+   - The app features an embedded local web server so you can control zoom, pan/tilt, exposure, and camera settings from your computer without touching the phone.
+   - Forward the port over ADB:
+     ```bash
+     adb forward tcp:8080 tcp:8080
+     ```
+   - Open [http://localhost:8080](http://localhost:8080) in your PC browser (or `http://<phone-ip>:8080` if on the same Wi-Fi).
+
 ---
 
 ## 🚀 Key Features & Highlights
 
+- **Embedded PC Web Remote Control (via ADB Port Forwarding or Wi-Fi)**:
+  - Built-in lightweight web dashboard accessible at `http://localhost:8080` via `adb forward tcp:8080 tcp:8080`.
+  - Control Digital Zoom, Pan & Tilt (PTZ) with interactive D-pad jog controls, camera lens switching, rotation, mirroring, exposure EV compensation, white balance, autofocus, frame rate caps, and MJPEG compression quality in real-time from your desktop while on a call.
 - **Standard Hardware UVC 1.1 Emulation**:
   - Exposes USB Video Class descriptors via ConfigFS (`functions/uvc.0`), recognized natively by OS-level UVC drivers (`uvcvideo` on Linux, `usbvideo.sys` on Windows, and macOS UVC class drivers).
 - **Dual Stream Formats & Resolution Profiles**:

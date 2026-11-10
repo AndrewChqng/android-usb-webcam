@@ -77,6 +77,9 @@
     <string name="help_faq_q6">The webcam doesn\'t enumerate on my PC, how do I fix it?</string>
     <string name="help_faq_a6">Try toggling \"Pure UVC-only mode\" or lowering \"UVC Isochronous Max Packet Size\" to 1024 in Settings if your USB hub or controller has limited isochronous bandwidth.</string>
 
+    <string name="help_faq_q7">How do I control webcam settings from my PC?</string>
+    <string name="help_faq_a7">The app runs an embedded local web server on port 8080.\n\n1. Connect your phone via USB with USB Debugging enabled.\n2. In terminal on your PC, forward port 8080 by running:\n    adb forward tcp:8080 tcp:8080\n3. Open http://localhost:8080 in your PC browser.\n\nYou can adjust digital zoom, pan, tilt, exposure EV, focus, camera lenses, and stream controls in real-time from your computer while on a video call!</string>
+
     <!-- Onboarding Screen -->
     <string name="onboarding_title">Initial Setup</string>
     <string name="onboarding_header">USB UVC Webcam Setup</string>

@@ -11,12 +11,15 @@ import kotlinx.coroutines.launch
 import com.andrewchqng.usbwebcam.hid_utils.CharacterDeviceManager
 import com.andrewchqng.usbwebcam.hid_utils.DevicePath
 import com.andrewchqng.usbwebcam.hid_utils.ModifiesStateDirectly
+import com.andrewchqng.usbwebcam.settings.AppPreference
 import com.andrewchqng.usbwebcam.settings.GadgetUserPreferences
 import com.andrewchqng.usbwebcam.settings.UserPreferencesRepository
 import com.andrewchqng.usbwebcam.shell_utils.RootStateHolder
 import com.andrewchqng.usbwebcam.webcam.WebcamController
 import com.andrewchqng.usbwebcam.webcam.WebcamForegroundService
 import com.andrewchqng.usbwebcam.webcam.WebcamStreamState
+import com.andrewchqng.usbwebcam.webserver.WebcamWebServer
+import com.andrewchqng.usbwebcam.webserver.WebServerState
 import timber.log.Timber
 
 data class MyUiState(
@@ -34,11 +37,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val rootStateHolder = RootStateHolder.getInstance()
     private val userPreferencesStateFlow = UserPreferencesRepository.getInstance(application).userPreferencesFlow
     private val webcamController = WebcamController.getInstance(application)
+    private val webServer = WebcamWebServer.getInstance(application)
 
     val webcamState: StateFlow<WebcamStreamState> = webcamController.state
+    val webServerState: StateFlow<WebServerState> = webServer.state
 
     init {
         webcamController.refreshCameraList()
+        val prefs = userPreferencesStateFlow.value
+        if (prefs.webServerEnabled) {
+            webServer.start(prefs.webServerPort)
+        }
+    }
+
+    fun setWebServerEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            UserPreferencesRepository.getInstance(getApplication()).setPreference(
+                AppPreference.WebServerEnabledPref,
+                enabled
+            )
+            if (enabled) {
+                val port = userPreferencesStateFlow.value.webServerPort
+                webServer.start(port)
+            } else {
+                webServer.stop()
+            }
+        }
+    }
+
+    fun restartWebServer() {
+        val port = userPreferencesStateFlow.value.webServerPort
+        webServer.restart(port)
     }
 
     fun startUsbWebcam() {

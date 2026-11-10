@@ -103,6 +103,8 @@ sealed class AppPreference(val preference: PreferenceKey<*>) {
 
     data object JpegQualityPref : IntPreferenceKey("jpeg_quality_v1", 82)
     data object MaxInFlightBuffersPref : IntPreferenceKey("max_in_flight_buffers_v1", 1)
+    data object WebServerEnabledPref : BooleanPreferenceKey("web_server_enabled", true)
+    data object WebServerPortPref : IntPreferenceKey("web_server_port", 8080)
 }
 
 sealed class SealedString(val key: String, @StringRes val id: Int)
@@ -169,6 +171,8 @@ data class UserPreferences(
     val customUsbManufacturerName: String = "",
     val jpegQuality: Int = 82,
     val maxInFlightBuffers: Int = 1,
+    val webServerEnabled: Boolean = true,
+    val webServerPort: Int = 8080,
 )
 
 @Parcelize
@@ -231,6 +235,8 @@ class UserPreferencesRepository private constructor(application: Application) {
                 customUsbManufacturerName = AppPreference.CustomUsbManufacturerNamePref.getValue(),
                 jpegQuality = AppPreference.JpegQualityPref.getValue(),
                 maxInFlightBuffers = AppPreference.MaxInFlightBuffersPref.getValue(),
+                webServerEnabled = AppPreference.WebServerEnabledPref.getValue(),
+                webServerPort = AppPreference.WebServerPortPref.getValue(),
             )
         }
 
