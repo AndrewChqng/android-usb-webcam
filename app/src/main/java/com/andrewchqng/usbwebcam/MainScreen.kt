@@ -75,6 +75,7 @@ import com.andrewchqng.usbwebcam.shell_utils.RootStateHolder
 import com.andrewchqng.usbwebcam.troubleshooting.TroubleshootingScreen
 import com.andrewchqng.usbwebcam.ui.standalone_screens.HelpScreen
 import com.andrewchqng.usbwebcam.ui.standalone_screens.InfoScreen
+import com.andrewchqng.usbwebcam.settings.UvcResolutionProfileOption
 import com.andrewchqng.usbwebcam.ui.theme.PaddingNormal
 import com.andrewchqng.usbwebcam.ui.utils.BasicPage
 import com.andrewchqng.usbwebcam.ui.utils.BasicTopBar
@@ -99,6 +100,7 @@ fun MainPage(
     val uiState by mainViewModel.uiState.collectAsState()
     val webcamState by mainViewModel.webcamState.collectAsState()
     val webServerState by mainViewModel.webServerState.collectAsState()
+    val userPreferences by mainViewModel.userPreferencesStateFlow.collectAsState()
     val clipboardManager = LocalClipboardManager.current
     val coroutineScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -415,6 +417,58 @@ fun MainPage(
                                 color = MaterialTheme.colorScheme.primary
                             )
                         }
+                    }
+                }
+            }
+        }
+
+        // Resolution Profile Selection Card
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Exposed Resolution Profile",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (webcamState.isUvcLoopRunning) {
+                        Text(
+                            text = "(Restart webcam to apply)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    val currentProfile = userPreferences.uvcResolutionProfileOption
+                    for (opt in UvcResolutionProfileOption.values) {
+                        val label = when (opt) {
+                            UvcResolutionProfileOption.Max1080p -> "Max 1080p"
+                            UvcResolutionProfileOption.Max1440p -> "Max 1440p 2K"
+                            UvcResolutionProfileOption.Max4K -> "Max 4K UHD"
+                            UvcResolutionProfileOption.Max720p -> "Max 720p HD"
+                            UvcResolutionProfileOption.Only1080p -> "Only 1080p (Forced)"
+                            UvcResolutionProfileOption.Only720p -> "Only 720p (Forced)"
+                            UvcResolutionProfileOption.Only4K -> "Only 4K (Forced)"
+                        }
+                        FilterChip(
+                            selected = currentProfile == opt,
+                            onClick = { mainViewModel.setResolutionProfile(opt) },
+                            label = { Text(label) }
+                        )
                     }
                 }
             }

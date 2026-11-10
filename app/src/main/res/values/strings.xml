@@ -101,4 +101,14 @@
     <string name="uvc_format_both">Both MJPEG &amp; YUYV (Recommended)</string>
     <string name="uvc_format_mjpeg_only">MJPEG Only (Compressed, Lowest USB Bandwidth)</string>
     <string name="uvc_format_yuyv_only">YUYV Only (Uncompressed Raw, High Bandwidth)</string>
+
+    <!-- Resolution Profiles -->
+    <string name="uvc_resolution_profile_title">Exposed Resolutions</string>
+    <string name="uvc_res_max_1080p">Max 1080p FHD (1080p, 720p, 480p, 360p - Recommended)</string>
+    <string name="uvc_res_max_1440p">Max 1440p 2K (1440p, 1080p, 720p, 480p, 360p)</string>
+    <string name="uvc_res_max_4k">Max 4K UHD (4K, 1440p, 1080p, 720p, 480p, 360p)</string>
+    <string name="uvc_res_max_720p">Max 720p HD (720p, 480p, 360p - Low Power)</string>
+    <string name="uvc_res_only_1080p">Only 1080p FHD (Forced 1080p, Prevents Host Downscaling)</string>
+    <string name="uvc_res_only_720p">Only 720p HD (Forced 720p)</string>
+    <string name="uvc_res_only_4k">Only 4K UHD (Forced 3840x2160)</string>
 </resources>

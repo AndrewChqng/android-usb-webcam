@@ -13,6 +13,7 @@ import com.andrewchqng.usbwebcam.hid_utils.DevicePath
 import com.andrewchqng.usbwebcam.hid_utils.ModifiesStateDirectly
 import com.andrewchqng.usbwebcam.settings.AppPreference
 import com.andrewchqng.usbwebcam.settings.GadgetUserPreferences
+import com.andrewchqng.usbwebcam.settings.UvcResolutionProfileOption
 import com.andrewchqng.usbwebcam.settings.UserPreferencesRepository
 import com.andrewchqng.usbwebcam.shell_utils.RootStateHolder
 import com.andrewchqng.usbwebcam.webcam.WebcamController
@@ -35,7 +36,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val characterDeviceManager = CharacterDeviceManager.getInstance(application)
     private val rootStateHolder = RootStateHolder.getInstance()
-    private val userPreferencesStateFlow = UserPreferencesRepository.getInstance(application).userPreferencesFlow
+    private val userPreferencesRepository = UserPreferencesRepository.getInstance(application)
+    val userPreferencesStateFlow = userPreferencesRepository.userPreferencesFlow
     private val webcamController = WebcamController.getInstance(application)
     private val webServer = WebcamWebServer.getInstance(application)
 
@@ -126,6 +128,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         characterDeviceManager.fixCharacterDevicePermissions(device)
+    }
+
+    fun setResolutionProfile(profile: UvcResolutionProfileOption) {
+        userPreferencesRepository.setPreference(AppPreference.UvcResolutionProfilePref, profile)
     }
 
     @OptIn(ModifiesStateDirectly::class)

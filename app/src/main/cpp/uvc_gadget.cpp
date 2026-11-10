@@ -36,49 +36,6 @@ namespace {
 // overwritten while DWC3 scatter-gather DMA still has trailing USB requests in flight.
 constexpr int kNumV4l2Buffers = 6;
 
-// Format table matching our ConfigFS layout in CharacterDeviceManager.kt:
-// When both/mjpeg: Format 1 is MJPEG (1: 640x360, 2: 640x480, 3: 1280x720, 4: 1920x1080)
-//                  Format 2 is YUYV  (1: 640x360, 2: 640x480, 3: 1280x720)
-// When yuyv only:  Format 1 is YUYV  (1: 640x360, 2: 640x480, 3: 1280x720)
-static const UvcFormatDesc kFormatsBothOrMjpeg[2] = {
-    {
-        .formatIndex = 1,
-        .fourcc = V4L2_PIX_FMT_MJPEG,
-        .numFrames = 4,
-        .frames = {
-            {1, 640, 360, 333333, {166666, 333333, 666666, 0}},
-            {2, 640, 480, 333333, {166666, 333333, 666666, 0}},
-            {3, 1280, 720, 333333, {166666, 333333, 666666, 0}},
-            {4, 1920, 1080, 333333, {166666, 333333, 666666, 0}},
-        },
-    },
-    {
-        .formatIndex = 2,
-        .fourcc = V4L2_PIX_FMT_YUYV,
-        .numFrames = 3,
-        .frames = {
-            {1, 640, 360, 333333, {333333, 666666, 1000000, 0}},
-            {2, 640, 480, 333333, {333333, 666666, 1000000, 0}},
-            {3, 1280, 720, 666666, {666666, 1000000, 2000000, 0}},
-            {0, 0, 0, 0, {0, 0, 0, 0}},
-        },
-    },
-};
-
-static const UvcFormatDesc kFormatsYuyvOnly[1] = {
-    {
-        .formatIndex = 1,
-        .fourcc = V4L2_PIX_FMT_YUYV,
-        .numFrames = 3,
-        .frames = {
-            {1, 640, 360, 333333, {333333, 666666, 1000000, 0}},
-            {2, 640, 480, 333333, {333333, 666666, 1000000, 0}},
-            {3, 1280, 720, 666666, {666666, 1000000, 2000000, 0}},
-            {0, 0, 0, 0, {0, 0, 0, 0}},
-        },
-    },
-};
-
 struct MmapBuffer {
     void* start = nullptr;
     size_t length = 0;
@@ -106,7 +63,127 @@ struct UvcContext {
     uint32_t num_buffers = 0;
     uint32_t next_write_idx = 0;
     uint32_t frame_sequence = 0;
+
+    int num_formats = 0;
+    UvcFormatDesc formats[2]{};
 };
+
+static void initContextFormats(UvcContext* ctx, bool isYuyvOnly, int profileId) {
+    if (!ctx) return;
+
+    const UvcFrameDesc frm360p = {1, 640, 360, 333333, {166666, 333333, 666666, 0}};
+    const UvcFrameDesc frm480p = {2, 640, 480, 333333, {166666, 333333, 666666, 0}};
+    const UvcFrameDesc frm720p = {3, 1280, 720, 333333, {166666, 333333, 666666, 0}};
+    const UvcFrameDesc frm1080p = {4, 1920, 1080, 333333, {166666, 333333, 666666, 0}};
+    const UvcFrameDesc frm1440p = {5, 2560, 1440, 333333, {166666, 333333, 666666, 0}};
+    const UvcFrameDesc frm4k = {6, 3840, 2160, 333333, {333333, 666666, 0, 0}};
+
+    const UvcFrameDesc yuyv360p = {1, 640, 360, 333333, {333333, 666666, 1000000, 0}};
+    const UvcFrameDesc yuyv480p = {2, 640, 480, 333333, {333333, 666666, 1000000, 0}};
+    const UvcFrameDesc yuyv720p = {3, 1280, 720, 666666, {666666, 1000000, 2000000, 0}};
+    const UvcFrameDesc yuyv1080p = {4, 1920, 1080, 2000000, {2000000, 0, 0, 0}};
+
+    UvcFormatDesc mjpegFmt{};
+    mjpegFmt.formatIndex = 1;
+    mjpegFmt.fourcc = V4L2_PIX_FMT_MJPEG;
+
+    UvcFormatDesc yuyvFmt{};
+    yuyvFmt.formatIndex = isYuyvOnly ? 1 : 2;
+    yuyvFmt.fourcc = V4L2_PIX_FMT_YUYV;
+
+    switch (profileId) {
+        case 1: // Max 1440p (2K)
+            mjpegFmt.numFrames = 5;
+            mjpegFmt.frames[0] = frm360p;
+            mjpegFmt.frames[1] = frm480p;
+            mjpegFmt.frames[2] = frm720p;
+            mjpegFmt.frames[3] = frm1080p;
+            mjpegFmt.frames[4] = frm1440p;
+
+            yuyvFmt.numFrames = 4;
+            yuyvFmt.frames[0] = yuyv360p;
+            yuyvFmt.frames[1] = yuyv480p;
+            yuyvFmt.frames[2] = yuyv720p;
+            yuyvFmt.frames[3] = yuyv1080p;
+            break;
+
+        case 2: // Max 4K (2160p)
+            mjpegFmt.numFrames = 6;
+            mjpegFmt.frames[0] = frm360p;
+            mjpegFmt.frames[1] = frm480p;
+            mjpegFmt.frames[2] = frm720p;
+            mjpegFmt.frames[3] = frm1080p;
+            mjpegFmt.frames[4] = frm1440p;
+            mjpegFmt.frames[5] = frm4k;
+
+            yuyvFmt.numFrames = 4;
+            yuyvFmt.frames[0] = yuyv360p;
+            yuyvFmt.frames[1] = yuyv480p;
+            yuyvFmt.frames[2] = yuyv720p;
+            yuyvFmt.frames[3] = yuyv1080p;
+            break;
+
+        case 3: // Max 720p (HD)
+            mjpegFmt.numFrames = 3;
+            mjpegFmt.frames[0] = frm360p;
+            mjpegFmt.frames[1] = frm480p;
+            mjpegFmt.frames[2] = frm720p;
+
+            yuyvFmt.numFrames = 3;
+            yuyvFmt.frames[0] = yuyv360p;
+            yuyvFmt.frames[1] = yuyv480p;
+            yuyvFmt.frames[2] = yuyv720p;
+            break;
+
+        case 4: // Only 1080p (FHD Forced)
+            mjpegFmt.numFrames = 1;
+            mjpegFmt.frames[0] = {1, 1920, 1080, 333333, {166666, 333333, 666666, 0}};
+
+            yuyvFmt.numFrames = 1;
+            yuyvFmt.frames[0] = {1, 1920, 1080, 2000000, {2000000, 0, 0, 0}};
+            break;
+
+        case 5: // Only 720p (HD Forced)
+            mjpegFmt.numFrames = 1;
+            mjpegFmt.frames[0] = {1, 1280, 720, 333333, {166666, 333333, 666666, 0}};
+
+            yuyvFmt.numFrames = 1;
+            yuyvFmt.frames[0] = {1, 1280, 720, 666666, {666666, 1000000, 2000000, 0}};
+            break;
+
+        case 6: // Only 4K (UHD Forced)
+            mjpegFmt.numFrames = 1;
+            mjpegFmt.frames[0] = {1, 3840, 2160, 333333, {333333, 666666, 0, 0}};
+
+            yuyvFmt.numFrames = 1;
+            yuyvFmt.frames[0] = {1, 1920, 1080, 2000000, {2000000, 0, 0, 0}};
+            break;
+
+        case 0: // Max 1080p (Default)
+        default:
+            mjpegFmt.numFrames = 4;
+            mjpegFmt.frames[0] = frm360p;
+            mjpegFmt.frames[1] = frm480p;
+            mjpegFmt.frames[2] = frm720p;
+            mjpegFmt.frames[3] = frm1080p;
+
+            yuyvFmt.numFrames = 4;
+            yuyvFmt.frames[0] = yuyv360p;
+            yuyvFmt.frames[1] = yuyv480p;
+            yuyvFmt.frames[2] = yuyv720p;
+            yuyvFmt.frames[3] = yuyv1080p;
+            break;
+    }
+
+    if (isYuyvOnly) {
+        ctx->num_formats = 1;
+        ctx->formats[0] = yuyvFmt;
+    } else {
+        ctx->num_formats = 2;
+        ctx->formats[0] = mjpegFmt;
+        ctx->formats[1] = yuyvFmt;
+    }
+}
 
 static std::mutex g_ctx_mutex;
 static UvcContext* g_ctx = nullptr;
@@ -137,13 +214,11 @@ void fillStreamingControl(
     uint32_t requestedInterval
 ) {
     memset(ctrl, 0, sizeof(*ctrl));
+    if (!ctx || ctx->num_formats == 0) return;
 
-    const bool yuyvOnly = (ctx != nullptr && ctx->is_yuyv_only);
-    const UvcFormatDesc* formats = yuyvOnly ? kFormatsYuyvOnly : kFormatsBothOrMjpeg;
-    int maxFmt = yuyvOnly ? 1 : 2;
-
+    int maxFmt = ctx->num_formats;
     int fmtIdx = (formatIndex >= 1 && formatIndex <= maxFmt) ? (formatIndex - 1) : 0;
-    const UvcFormatDesc& fmt = formats[fmtIdx];
+    const UvcFormatDesc& fmt = ctx->formats[fmtIdx];
 
     int frmIdx = (frameIndex >= 1 && frameIndex <= fmt.numFrames) ? (frameIndex - 1) : 0;
     const UvcFrameDesc& frm = fmt.frames[frmIdx];
@@ -408,12 +483,9 @@ void handleUvcDataEvent(UvcContext* ctx, const struct uvc_request_data& data) {
     if (ctx->current_control == UVC_VS_COMMIT_CONTROL) {
         ctx->commit_ctrl = resolved;
 
-        const bool yuyvOnly = ctx->is_yuyv_only;
-        const UvcFormatDesc* formats = yuyvOnly ? kFormatsYuyvOnly : kFormatsBothOrMjpeg;
-        int maxFmt = yuyvOnly ? 1 : 2;
-
+        int maxFmt = ctx->num_formats;
         int fmtIdx = (resolved.bFormatIndex >= 1 && resolved.bFormatIndex <= maxFmt) ? (resolved.bFormatIndex - 1) : 0;
-        const UvcFormatDesc& fmt = formats[fmtIdx];
+        const UvcFormatDesc& fmt = ctx->formats[fmtIdx];
         int frmIdx = (resolved.bFrameIndex >= 1 && resolved.bFrameIndex <= fmt.numFrames) ? (resolved.bFrameIndex - 1) : 0;
         const UvcFrameDesc& frm = fmt.frames[frmIdx];
 
@@ -671,7 +743,8 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeOpen(
     jobject /* thiz */,
     jstring jDevicePath,
     jint maxPayloadSize,
-    jboolean isYuyvOnly
+    jboolean isYuyvOnly,
+    jint resolutionProfile
 ) {
     std::lock_guard<std::mutex> lock(g_ctx_mutex);
 
@@ -692,7 +765,8 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeOpen(
         env->ReleaseStringUTFChars(jDevicePath, path);
         return -err;
     }
-    LOGI("Opened UVC V4L2 device: %s (fd=%d, maxPayload=%d, isYuyvOnly=%d)", path, fd, maxPayloadSize, isYuyvOnly);
+    LOGI("Opened UVC V4L2 device: %s (fd=%d, maxPayload=%d, isYuyvOnly=%d, profile=%d)",
+         path, fd, maxPayloadSize, isYuyvOnly, resolutionProfile);
     env->ReleaseStringUTFChars(jDevicePath, path);
 
     struct v4l2_capability cap {};
@@ -709,15 +783,19 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeOpen(
     ctx->max_payload_size = (maxPayloadSize > 0) ? static_cast<uint32_t>(maxPayloadSize) : 1024u;
     ctx->is_yuyv_only = (isYuyvOnly == JNI_TRUE);
 
-    if (ctx->is_yuyv_only) {
-        // Default to 1280x720 YUYV (frame index 3)
-        fillStreamingControl(ctx, &ctx->probe_ctrl, 1, 3, 666666);
-        fillStreamingControl(ctx, &ctx->commit_ctrl, 1, 3, 666666);
-    } else {
-        // Default to 1280x720 MJPEG @ 30fps (frame index 3)
-        fillStreamingControl(ctx, &ctx->probe_ctrl, 1, 3, 333333);
-        fillStreamingControl(ctx, &ctx->commit_ctrl, 1, 3, 333333);
-    }
+    initContextFormats(ctx, ctx->is_yuyv_only, resolutionProfile);
+
+    int defaultFormatIndex = 1;
+    int defaultFrameIndex = (ctx->formats[0].numFrames > 0) ? ctx->formats[0].numFrames : 1;
+    uint32_t defaultInterval = ctx->formats[0].frames[defaultFrameIndex - 1].defaultInterval;
+
+    fillStreamingControl(ctx, &ctx->probe_ctrl, defaultFormatIndex, defaultFrameIndex, defaultInterval);
+    fillStreamingControl(ctx, &ctx->commit_ctrl, defaultFormatIndex, defaultFrameIndex, defaultInterval);
+
+    ctx->active_fourcc = ctx->formats[0].fourcc;
+    ctx->active_width = ctx->formats[0].frames[defaultFrameIndex - 1].width;
+    ctx->active_height = ctx->formats[0].frames[defaultFrameIndex - 1].height;
+    ctx->active_interval = defaultInterval;
 
     for (uint32_t evType = UVC_EVENT_FIRST; evType <= UVC_EVENT_LAST; ++evType) {
         struct v4l2_event_subscription sub {};

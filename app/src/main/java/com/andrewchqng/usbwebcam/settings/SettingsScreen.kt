@@ -59,6 +59,7 @@ fun SettingsPage() {
         PreferenceCategory(
             title = stringResource(R.string.uvc_gadget_header),
         ) {
+            AppSettings.UvcResolutionProfilePreference()
             AppSettings.UvcExposedFormatsPreference()
             AppSettings.UvcMaxPacketPreference()
             AppSettings.UvcMaxBurstPreference()
@@ -194,6 +195,25 @@ private object AppSettings {
             title = stringResource(R.string.experimental_mode_title),
             summary = stringResource(R.string.experimental_mode_summary),
             preference = AppPreference.ExperimentalMode
+        )
+    }
+
+    @Composable
+    fun UvcResolutionProfilePreference(
+        enabled: Boolean = true,
+        settingsViewModel: SettingsViewModel = viewModel()
+    ) {
+        val preferencesState by settingsViewModel.userPreferencesFlow.collectAsState()
+        val selected = preferencesState.uvcResolutionProfileOption
+        val options = UvcResolutionProfileOption.values
+        BasicListPreference(
+            title = stringResource(R.string.uvc_resolution_profile_title),
+            options = options,
+            enabled = enabled,
+            selected = selected,
+            onPreferenceClicked = { opt ->
+                settingsViewModel.setPreference(AppPreference.UvcResolutionProfilePref, opt)
+            }
         )
     }
 

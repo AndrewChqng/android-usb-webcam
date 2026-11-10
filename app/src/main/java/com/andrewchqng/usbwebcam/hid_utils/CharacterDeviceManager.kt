@@ -121,6 +121,51 @@ class CharacterDeviceManager private constructor(private val application: Applic
         val customProduct = prefs.customProductName.trim()
         val customMfg = prefs.customManufacturerName.trim()
 
+        val (mjpegFrames, mjpegDefaultIdx) = when (prefs.resolutionProfile) {
+            "max_1440p" -> listOf(
+                MJPEG_FRAME_360P, MJPEG_FRAME_480P, MJPEG_FRAME_720P, MJPEG_FRAME_1080P, MJPEG_FRAME_1440P
+            ) to 5
+            "max_4k" -> listOf(
+                MJPEG_FRAME_360P, MJPEG_FRAME_480P, MJPEG_FRAME_720P, MJPEG_FRAME_1080P, MJPEG_FRAME_1440P, MJPEG_FRAME_4K
+            ) to 6
+            "max_720p" -> listOf(
+                MJPEG_FRAME_360P, MJPEG_FRAME_480P, MJPEG_FRAME_720P
+            ) to 3
+            "only_1080p" -> listOf(
+                MJPEG_FRAME_1080P.copy(dirName = "f1_1080p")
+            ) to 1
+            "only_720p" -> listOf(
+                MJPEG_FRAME_720P.copy(dirName = "f1_720p")
+            ) to 1
+            "only_4k" -> listOf(
+                MJPEG_FRAME_4K.copy(dirName = "f1_4k")
+            ) to 1
+            else -> listOf(
+                MJPEG_FRAME_360P, MJPEG_FRAME_480P, MJPEG_FRAME_720P, MJPEG_FRAME_1080P
+            ) to 4
+        }
+
+        val (yuyvFrames, yuyvDefaultIdx) = when (prefs.resolutionProfile) {
+            "max_720p" -> listOf(
+                YUYV_FRAME_360P, YUYV_FRAME_480P, YUYV_FRAME_720P
+            ) to 3
+            "only_1080p" -> listOf(
+                YUYV_FRAME_1080P.copy(dirName = "f1_1080p")
+            ) to 1
+            "only_720p" -> listOf(
+                YUYV_FRAME_720P.copy(dirName = "f1_720p")
+            ) to 1
+            "only_4k" -> listOf(
+                YUYV_FRAME_1080P.copy(dirName = "f1_1080p")
+            ) to 1
+            else -> listOf(
+                YUYV_FRAME_360P, YUYV_FRAME_480P, YUYV_FRAME_720P, YUYV_FRAME_1080P
+            ) to 4
+        }
+
+        val mjpegFramesScript = generateFrameCommands("UVC/streaming/mjpeg/m", mjpegFrames, mjpegDefaultIdx)
+        val yuyvFramesScript = generateFrameCommands("UVC/streaming/uncompressed/u", yuyvFrames, yuyvDefaultIdx)
+
         val script = """
             G="$gPath"
             [ -d "${'$'}G" ] || G="/config/usb_gadget/g1"
@@ -200,64 +245,10 @@ class CharacterDeviceManager private constructor(private val application: Applic
             ln -s "${'$'}UVC/control/header/h" "${'$'}UVC/control/class/fs/h" 2>/dev/null || true
             ln -s "${'$'}UVC/control/header/h" "${'$'}UVC/control/class/ss/h" 2>/dev/null || true
 
-            mkdir -p "${'$'}UVC/streaming/mjpeg/m/f1_360p" "${'$'}UVC/streaming/mjpeg/m/f2_480p" "${'$'}UVC/streaming/mjpeg/m/f3_720p" "${'$'}UVC/streaming/mjpeg/m/f4_1080p"
-            echo 640 > "${'$'}UVC/streaming/mjpeg/m/f1_360p/wWidth"
-            echo 360 > "${'$'}UVC/streaming/mjpeg/m/f1_360p/wHeight"
-            echo 18432000 > "${'$'}UVC/streaming/mjpeg/m/f1_360p/dwMinBitRate"
-            echo 110592000 > "${'$'}UVC/streaming/mjpeg/m/f1_360p/dwMaxBitRate"
-            echo 460800 > "${'$'}UVC/streaming/mjpeg/m/f1_360p/dwMaxVideoFrameBufferSize"
-            echo 333333 > "${'$'}UVC/streaming/mjpeg/m/f1_360p/dwDefaultFrameInterval"
-            printf "166666\n333333\n666666\n" > "${'$'}UVC/streaming/mjpeg/m/f1_360p/dwFrameInterval"
-
-            echo 640 > "${'$'}UVC/streaming/mjpeg/m/f2_480p/wWidth"
-            echo 480 > "${'$'}UVC/streaming/mjpeg/m/f2_480p/wHeight"
-            echo 24576000 > "${'$'}UVC/streaming/mjpeg/m/f2_480p/dwMinBitRate"
-            echo 147456000 > "${'$'}UVC/streaming/mjpeg/m/f2_480p/dwMaxBitRate"
-            echo 614400 > "${'$'}UVC/streaming/mjpeg/m/f2_480p/dwMaxVideoFrameBufferSize"
-            echo 333333 > "${'$'}UVC/streaming/mjpeg/m/f2_480p/dwDefaultFrameInterval"
-            printf "166666\n333333\n666666\n" > "${'$'}UVC/streaming/mjpeg/m/f2_480p/dwFrameInterval"
-
-            echo 1280 > "${'$'}UVC/streaming/mjpeg/m/f3_720p/wWidth"
-            echo 720 > "${'$'}UVC/streaming/mjpeg/m/f3_720p/wHeight"
-            echo 29491200 > "${'$'}UVC/streaming/mjpeg/m/f3_720p/dwMinBitRate"
-            echo 221184000 > "${'$'}UVC/streaming/mjpeg/m/f3_720p/dwMaxBitRate"
-            echo 1843200 > "${'$'}UVC/streaming/mjpeg/m/f3_720p/dwMaxVideoFrameBufferSize"
-            echo 333333 > "${'$'}UVC/streaming/mjpeg/m/f3_720p/dwDefaultFrameInterval"
-            printf "166666\n333333\n666666\n" > "${'$'}UVC/streaming/mjpeg/m/f3_720p/dwFrameInterval"
-
-            echo 1920 > "${'$'}UVC/streaming/mjpeg/m/f4_1080p/wWidth"
-            echo 1080 > "${'$'}UVC/streaming/mjpeg/m/f4_1080p/wHeight"
-            echo 66355200 > "${'$'}UVC/streaming/mjpeg/m/f4_1080p/dwMinBitRate"
-            echo 497664000 > "${'$'}UVC/streaming/mjpeg/m/f4_1080p/dwMaxBitRate"
-            echo 4147200 > "${'$'}UVC/streaming/mjpeg/m/f4_1080p/dwMaxVideoFrameBufferSize"
-            echo 333333 > "${'$'}UVC/streaming/mjpeg/m/f4_1080p/dwDefaultFrameInterval"
-            printf "166666\n333333\n666666\n" > "${'$'}UVC/streaming/mjpeg/m/f4_1080p/dwFrameInterval"
+$mjpegFramesScript
             echo 0x04 > "${'$'}UVC/streaming/mjpeg/m/bmaControls" 2>/dev/null || true
 
-            mkdir -p "${'$'}UVC/streaming/uncompressed/u/f1_360p" "${'$'}UVC/streaming/uncompressed/u/f2_480p" "${'$'}UVC/streaming/uncompressed/u/f3_720p"
-            echo 640 > "${'$'}UVC/streaming/uncompressed/u/f1_360p/wWidth"
-            echo 360 > "${'$'}UVC/streaming/uncompressed/u/f1_360p/wHeight"
-            echo 36864000 > "${'$'}UVC/streaming/uncompressed/u/f1_360p/dwMinBitRate"
-            echo 110592000 > "${'$'}UVC/streaming/uncompressed/u/f1_360p/dwMaxBitRate"
-            echo 460800 > "${'$'}UVC/streaming/uncompressed/u/f1_360p/dwMaxVideoFrameBufferSize"
-            echo 333333 > "${'$'}UVC/streaming/uncompressed/u/f1_360p/dwDefaultFrameInterval"
-            printf "333333\n666666\n1000000\n" > "${'$'}UVC/streaming/uncompressed/u/f1_360p/dwFrameInterval"
-
-            echo 640 > "${'$'}UVC/streaming/uncompressed/u/f2_480p/wWidth"
-            echo 480 > "${'$'}UVC/streaming/uncompressed/u/f2_480p/wHeight"
-            echo 49152000 > "${'$'}UVC/streaming/uncompressed/u/f2_480p/dwMinBitRate"
-            echo 147456000 > "${'$'}UVC/streaming/uncompressed/u/f2_480p/dwMaxBitRate"
-            echo 614400 > "${'$'}UVC/streaming/uncompressed/u/f2_480p/dwMaxVideoFrameBufferSize"
-            echo 333333 > "${'$'}UVC/streaming/uncompressed/u/f2_480p/dwDefaultFrameInterval"
-            printf "333333\n666666\n1000000\n" > "${'$'}UVC/streaming/uncompressed/u/f2_480p/dwFrameInterval"
-
-            echo 1280 > "${'$'}UVC/streaming/uncompressed/u/f3_720p/wWidth"
-            echo 720 > "${'$'}UVC/streaming/uncompressed/u/f3_720p/wHeight"
-            echo 73728000 > "${'$'}UVC/streaming/uncompressed/u/f3_720p/dwMinBitRate"
-            echo 221184000 > "${'$'}UVC/streaming/uncompressed/u/f3_720p/dwMaxBitRate"
-            echo 1843200 > "${'$'}UVC/streaming/uncompressed/u/f3_720p/dwMaxVideoFrameBufferSize"
-            echo 666666 > "${'$'}UVC/streaming/uncompressed/u/f3_720p/dwDefaultFrameInterval"
-            printf "666666\n1000000\n2000000\n" > "${'$'}UVC/streaming/uncompressed/u/f3_720p/dwFrameInterval"
+$yuyvFramesScript
 
             mkdir -p "${'$'}UVC/streaming/header/h"
             if [ "$exposedFormats" != "yuyv" ]; then
@@ -518,6 +509,87 @@ class CharacterDeviceManager private constructor(private val application: Applic
 
     companion object {
         const val AUTO_DETECT_VIDEO_PATH = "auto"
+
+        private data class UvcFrameConfig(
+            val dirName: String,
+            val width: Int,
+            val height: Int,
+            val minBitRate: Long,
+            val maxBitRate: Long,
+            val maxBufSize: Long,
+            val defaultInterval: Long,
+            val intervals: List<Long>
+        )
+
+        private val MJPEG_FRAME_360P = UvcFrameConfig(
+            dirName = "f1_360p", width = 640, height = 360,
+            minBitRate = 18432000L, maxBitRate = 110592000L, maxBufSize = 460800L,
+            defaultInterval = 333333L, intervals = listOf(166666L, 333333L, 666666L)
+        )
+        private val MJPEG_FRAME_480P = UvcFrameConfig(
+            dirName = "f2_480p", width = 640, height = 480,
+            minBitRate = 24576000L, maxBitRate = 147456000L, maxBufSize = 614400L,
+            defaultInterval = 333333L, intervals = listOf(166666L, 333333L, 666666L)
+        )
+        private val MJPEG_FRAME_720P = UvcFrameConfig(
+            dirName = "f3_720p", width = 1280, height = 720,
+            minBitRate = 29491200L, maxBitRate = 221184000L, maxBufSize = 1843200L,
+            defaultInterval = 333333L, intervals = listOf(166666L, 333333L, 666666L)
+        )
+        private val MJPEG_FRAME_1080P = UvcFrameConfig(
+            dirName = "f4_1080p", width = 1920, height = 1080,
+            minBitRate = 66355200L, maxBitRate = 497664000L, maxBufSize = 4147200L,
+            defaultInterval = 333333L, intervals = listOf(166666L, 333333L, 666666L)
+        )
+        private val MJPEG_FRAME_1440P = UvcFrameConfig(
+            dirName = "f5_1440p", width = 2560, height = 1440,
+            minBitRate = 117964800L, maxBitRate = 884736000L, maxBufSize = 7372800L,
+            defaultInterval = 333333L, intervals = listOf(166666L, 333333L, 666666L)
+        )
+        private val MJPEG_FRAME_4K = UvcFrameConfig(
+            dirName = "f6_4k", width = 3840, height = 2160,
+            minBitRate = 265420800L, maxBitRate = 530841600L, maxBufSize = 16588800L,
+            defaultInterval = 333333L, intervals = listOf(333333L, 666666L)
+        )
+
+        private val YUYV_FRAME_360P = UvcFrameConfig(
+            dirName = "f1_360p", width = 640, height = 360,
+            minBitRate = 36864000L, maxBitRate = 110592000L, maxBufSize = 460800L,
+            defaultInterval = 333333L, intervals = listOf(333333L, 666666L, 1000000L)
+        )
+        private val YUYV_FRAME_480P = UvcFrameConfig(
+            dirName = "f2_480p", width = 640, height = 480,
+            minBitRate = 49152000L, maxBitRate = 147456000L, maxBufSize = 614400L,
+            defaultInterval = 333333L, intervals = listOf(333333L, 666666L, 1000000L)
+        )
+        private val YUYV_FRAME_720P = UvcFrameConfig(
+            dirName = "f3_720p", width = 1280, height = 720,
+            minBitRate = 73728000L, maxBitRate = 221184000L, maxBufSize = 1843200L,
+            defaultInterval = 666666L, intervals = listOf(666666L, 1000000L, 2000000L)
+        )
+        private val YUYV_FRAME_1080P = UvcFrameConfig(
+            dirName = "f4_1080p", width = 1920, height = 1080,
+            minBitRate = 165888000L, maxBitRate = 497664000L, maxBufSize = 4147200L,
+            defaultInterval = 2000000L, intervals = listOf(2000000L)
+        )
+
+        private fun generateFrameCommands(basePathVar: String, frames: List<UvcFrameConfig>, defaultFrameIndex: Int): String {
+            return buildString {
+                for (f in frames) {
+                    val p = "\${$basePathVar}/${f.dirName}"
+                    val intervalsFormatted = f.intervals.joinToString("""\n""") + """\n"""
+                    appendLine("            mkdir -p \"$p\"")
+                    appendLine("            echo ${f.width} > \"$p/wWidth\"")
+                    appendLine("            echo ${f.height} > \"$p/wHeight\"")
+                    appendLine("            echo ${f.minBitRate} > \"$p/dwMinBitRate\"")
+                    appendLine("            echo ${f.maxBitRate} > \"$p/dwMaxBitRate\"")
+                    appendLine("            echo ${f.maxBufSize} > \"$p/dwMaxVideoFrameBufferSize\"")
+                    appendLine("            echo ${f.defaultInterval} > \"$p/dwDefaultFrameInterval\"")
+                    appendLine("            printf \"$intervalsFormatted\" > \"$p/dwFrameInterval\"")
+                }
+                appendLine("            echo $defaultFrameIndex > \"\${$basePathVar}/bDefaultFrameIndex\" 2>/dev/null || true")
+            }
+        }
 
         object DevicePaths {
             val DEFAULT_UVC_DEVICE_PATH = UvcVideoDevicePath(AUTO_DETECT_VIDEO_PATH)

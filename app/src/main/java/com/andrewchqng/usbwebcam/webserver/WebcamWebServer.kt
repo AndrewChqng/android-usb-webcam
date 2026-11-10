@@ -2,7 +2,9 @@ package com.andrewchqng.usbwebcam.webserver
 
 import android.app.Application
 import com.andrewchqng.usbwebcam.hid_utils.CharacterDeviceManager
+import com.andrewchqng.usbwebcam.settings.AppPreference
 import com.andrewchqng.usbwebcam.settings.GadgetUserPreferences
+import com.andrewchqng.usbwebcam.settings.UvcResolutionProfileOption
 import com.andrewchqng.usbwebcam.settings.UserPreferencesRepository
 import com.andrewchqng.usbwebcam.shell_utils.RootStateHolder
 import com.andrewchqng.usbwebcam.webcam.WebcamController
@@ -11,6 +13,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -305,6 +308,9 @@ class WebcamWebServer private constructor(private val application: Application) 
         json.put("studioQuality", s.studioQualityProcessing)
         json.put("lastError", s.lastError ?: "")
 
+        val resProfile = UserPreferencesRepository.getInstance(application).userPreferencesFlow.value.uvcResolutionProfileOption.key
+        json.put("resolutionProfile", resProfile)
+
         val urlsArray = JSONArray()
         for (u in _state.value.urls) {
             urlsArray.put(u)
@@ -323,6 +329,13 @@ class WebcamWebServer private constructor(private val application: Application) 
             }
             "stop" -> {
                 scope.launch { stopWebcam() }
+            }
+            "restart" -> {
+                scope.launch {
+                    stopWebcam()
+                    delay(400)
+                    startWebcam()
+                }
             }
             "recenter" -> {
                 webcamController.resetPan()
@@ -347,6 +360,11 @@ class WebcamWebServer private constructor(private val application: Application) 
         }
         if (json.has("cameraId")) {
             webcamController.selectCamera(json.optString("cameraId"))
+        }
+        if (json.has("resolutionProfile")) {
+            val key = json.optString("resolutionProfile")
+            val opt = UvcResolutionProfileOption.fromKey(key)
+            UserPreferencesRepository.getInstance(application).setPreference(AppPreference.UvcResolutionProfilePref, opt)
         }
         if (json.has("rotation")) {
             webcamController.setRotation(json.optInt("rotation"))
@@ -541,6 +559,7 @@ class WebcamWebServer private constructor(private val application: Application) 
       </div>
       <div style="display: flex; gap: 10px; align-items: center;">
         <span id="badge-status" class="badge idle">Idle</span>
+        <button id="btn-restart-webcam" class="btn-outline" style="display:none;" onclick="postAction('restart')">Restart</button>
         <button id="btn-toggle-webcam" class="btn-primary" onclick="toggleWebcam()">Start Webcam</button>
       </div>
     </header>
@@ -645,7 +664,23 @@ class WebcamWebServer private constructor(private val application: Application) 
       <!-- Camera Lens & Video Encoding Card -->
       <div class="card">
         <div class="card-title">
-          <span>📷 Camera Lens & Orientation</span>
+          <span>📷 Camera Lens, Resolution & Orientation</span>
+        </div>
+
+        <div class="control-group">
+          <div class="control-header">
+            <span>Exposed Resolution Profile</span>
+            <span id="lbl-res-info" style="font-size: 11px; color: var(--text-muted);">(Click Restart to apply)</span>
+          </div>
+          <div class="btn-row" id="res-profile-container">
+            <button class="pill-btn" id="res-max_1080p" onclick="setResProfile('max_1080p')">Max 1080p</button>
+            <button class="pill-btn" id="res-max_1440p" onclick="setResProfile('max_1440p')">Max 1440p 2K</button>
+            <button class="pill-btn" id="res-max_4k" onclick="setResProfile('max_4k')">Max 4K UHD</button>
+            <button class="pill-btn" id="res-max_720p" onclick="setResProfile('max_720p')">Max 720p</button>
+            <button class="pill-btn" id="res-only_1080p" onclick="setResProfile('only_1080p')">Only 1080p</button>
+            <button class="pill-btn" id="res-only_720p" onclick="setResProfile('only_720p')">Only 720p</button>
+            <button class="pill-btn" id="res-only_4k" onclick="setResProfile('only_4k')">Only 4K</button>
+          </div>
         </div>
 
         <div class="control-group">
@@ -856,6 +891,11 @@ class WebcamWebServer private constructor(private val application: Application) 
       postAction('resetIsp');
     }
 
+    function setResProfile(p) {
+      postSettings({ resolutionProfile: p });
+      setTimeout(fetchStatus, 150);
+    }
+
     function onZoomInput(val) {
       markInteracting();
       document.getElementById('lbl-zoom').innerText = parseFloat(val).toFixed(1) + 'x';
@@ -956,6 +996,17 @@ class WebcamWebServer private constructor(private val application: Application) 
         toggleBtn.className = 'btn-primary';
         toggleBtn.innerText = 'Start Webcam';
       }
+
+      const restartBtn = document.getElementById('btn-restart-webcam');
+      if (restartBtn) {
+        restartBtn.style.display = data.isUvcLoopRunning ? 'inline-block' : 'none';
+      }
+
+      // Resolution profile pills
+      ['max_1080p', 'max_1440p', 'max_4k', 'max_720p', 'only_1080p', 'only_720p', 'only_4k'].forEach(p => {
+        const btn = document.getElementById('res-' + p);
+        if (btn) btn.className = 'pill-btn' + (data.resolutionProfile === p ? ' active' : '');
+      });
 
       // Telemetry
       document.getElementById('txt-fps-pill').innerText = data.measuredFps.toFixed(1) + ' FPS';

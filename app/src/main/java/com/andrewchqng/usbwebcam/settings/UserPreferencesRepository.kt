@@ -89,6 +89,12 @@ sealed class AppPreference(val preference: PreferenceKey<*>) {
         toStringPreference = { it.key }
     )
 
+    data object UvcResolutionProfilePref : ObjectPreferenceKey<UvcResolutionProfileOption>(
+        "uvc_resolution_profile_v1", UvcResolutionProfileOption.Max1080p,
+        fromStringPreference = { UvcResolutionProfileOption.fromKey(it) },
+        toStringPreference = { it.key }
+    )
+
     data object CustomUsbProductNamePref : ObjectPreferenceKey<String>(
         "custom_usb_product_name", "",
         fromStringPreference = { it },
@@ -117,6 +123,25 @@ sealed class UvcExposedFormatsOption(key: String, @StringRes id: Int) : SealedSt
     companion object {
         val values: List<UvcExposedFormatsOption>
             get() = listOf(Both, MjpegOnly, YuyvOnly)
+    }
+}
+
+sealed class UvcResolutionProfileOption(key: String, @StringRes id: Int, val profileId: Int) : SealedString(key, id) {
+    data object Max1080p : UvcResolutionProfileOption("max_1080p", R.string.uvc_res_max_1080p, 0)
+    data object Max1440p : UvcResolutionProfileOption("max_1440p", R.string.uvc_res_max_1440p, 1)
+    data object Max4K : UvcResolutionProfileOption("max_4k", R.string.uvc_res_max_4k, 2)
+    data object Max720p : UvcResolutionProfileOption("max_720p", R.string.uvc_res_max_720p, 3)
+    data object Only1080p : UvcResolutionProfileOption("only_1080p", R.string.uvc_res_only_1080p, 4)
+    data object Only720p : UvcResolutionProfileOption("only_720p", R.string.uvc_res_only_720p, 5)
+    data object Only4K : UvcResolutionProfileOption("only_4k", R.string.uvc_res_only_4k, 6)
+
+    companion object {
+        val values: List<UvcResolutionProfileOption>
+            get() = listOf(Max1080p, Max1440p, Max4K, Max720p, Only1080p, Only720p, Only4K)
+
+        fun fromKey(key: String): UvcResolutionProfileOption {
+            return values.firstOrNull { it.key == key } ?: Max1080p
+        }
     }
 }
 
@@ -167,6 +192,7 @@ data class UserPreferences(
     val uvcMaxBurstOption: UvcMaxBurstOption,
     val boostUsbIrqPriority: Boolean,
     val uvcExposedFormatsOption: UvcExposedFormatsOption = UvcExposedFormatsOption.Both,
+    val uvcResolutionProfileOption: UvcResolutionProfileOption = UvcResolutionProfileOption.Max1080p,
     val customUsbProductName: String = "",
     val customUsbManufacturerName: String = "",
     val jpegQuality: Int = 82,
@@ -185,6 +211,8 @@ data class GadgetUserPreferences(
     val uvcMaxBurst: Int = 0,
     val boostUsbIrqPriority: Boolean = true,
     val exposedFormats: String = "both",
+    val resolutionProfile: String = "max_1080p",
+    val resolutionProfileId: Int = 0,
     val customProductName: String = "",
     val customManufacturerName: String = "",
 ) : Parcelable {
@@ -199,6 +227,8 @@ data class GadgetUserPreferences(
                 uvcMaxBurst = userPreferences.uvcMaxBurstOption.burst,
                 boostUsbIrqPriority = userPreferences.boostUsbIrqPriority,
                 exposedFormats = userPreferences.uvcExposedFormatsOption.key,
+                resolutionProfile = userPreferences.uvcResolutionProfileOption.key,
+                resolutionProfileId = userPreferences.uvcResolutionProfileOption.profileId,
                 customProductName = userPreferences.customUsbProductName,
                 customManufacturerName = userPreferences.customUsbManufacturerName,
             )
@@ -231,6 +261,7 @@ class UserPreferencesRepository private constructor(application: Application) {
                 uvcMaxBurstOption = AppPreference.UvcMaxBurstPref.getValue(),
                 boostUsbIrqPriority = AppPreference.BoostUsbIrqPriority.getValue(),
                 uvcExposedFormatsOption = AppPreference.UvcExposedFormatsPref.getValue(),
+                uvcResolutionProfileOption = AppPreference.UvcResolutionProfilePref.getValue(),
                 customUsbProductName = AppPreference.CustomUsbProductNamePref.getValue(),
                 customUsbManufacturerName = AppPreference.CustomUsbManufacturerNamePref.getValue(),
                 jpegQuality = AppPreference.JpegQualityPref.getValue(),

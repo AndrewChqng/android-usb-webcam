@@ -130,9 +130,9 @@ class WebcamController private constructor(private val application: Application)
     private var imageReader: ImageReader? = null
     private var previewSurface: Surface? = null
 
-    // Reusable pre-allocated buffers for zero-GC frame encoding
+    // Reusable pre-allocated buffers for zero-GC frame encoding (sized up to 4K UHD 3840x2160)
     private var nv21Buffer: ByteArray = ByteArray(0)
-    private val directJpegBuffer: ByteBuffer = ByteBuffer.allocateDirect(1920 * 1080 * 2)
+    private val directJpegBuffer: ByteBuffer = ByteBuffer.allocateDirect(3840 * 2160 * 2)
     private val jpegOutputStream = DirectByteBufferOutputStream(directJpegBuffer)
 
     // Telemetry & pacing state
@@ -214,7 +214,13 @@ class WebcamController private constructor(private val application: Application)
             false
         }
 
-        val fdOrErr = UvcNative.nativeOpen(videoDevicePath, maxPayloadSize, isYuyvOnly)
+        val resProfileId = try {
+            UserPreferencesRepository.getInstance(application).userPreferencesFlow.value.uvcResolutionProfileOption.profileId
+        } catch (_: Exception) {
+            0
+        }
+
+        val fdOrErr = UvcNative.nativeOpen(videoDevicePath, maxPayloadSize, isYuyvOnly, resProfileId)
         if (fdOrErr < 0) {
             val errMsg = "Failed to open $videoDevicePath (errno=${-fdOrErr})"
             Timber.e(errMsg)
@@ -527,8 +533,13 @@ class WebcamController private constructor(private val application: Application)
             val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             val sizes = map?.getOutputSizes(ImageFormat.YUV_420_888) ?: return Size(targetW, targetH)
 
-            // Prefer 1920x1080 capture when output is <= 1080p to provide high-detail headroom for digital PTZ
-            if (targetW <= 1920 && targetH <= 1080) {
+            // Match 4K UHD or 1440p QHD if requested, otherwise prefer 1080p for PTZ headroom
+            if (targetW >= 3840 && targetH >= 2160) {
+                sizes.firstOrNull { it.width == 3840 && it.height == 2160 }?.let { return it }
+            } else if (targetW >= 2560 && targetH >= 1440) {
+                sizes.firstOrNull { it.width == 2560 && it.height == 1440 }?.let { return it }
+                    ?: sizes.firstOrNull { it.width == 3840 && it.height == 2160 }?.let { return it }
+            } else if (targetW <= 1920 && targetH <= 1080) {
                 sizes.firstOrNull { it.width == 1920 && it.height == 1080 }?.let { return it }
             }
 
