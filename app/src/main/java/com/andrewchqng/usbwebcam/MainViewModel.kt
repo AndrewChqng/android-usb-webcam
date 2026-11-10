@@ -124,6 +124,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setVideoStabilization(enabled: Boolean) = webcamController.setVideoStabilization(enabled)
     fun setZoomRatio(zoom: Float) = webcamController.setZoomRatio(zoom)
     fun setExposureEv(ev: Float) = webcamController.setExposureEv(ev)
+    fun setAwbMode(mode: Int) = webcamController.setAwbMode(mode)
+    fun setAwbLock(locked: Boolean) = webcamController.setAwbLock(locked)
+    fun setAeLock(locked: Boolean) = webcamController.setAeLock(locked)
+    fun setAntiBandingMode(mode: Int) = webcamController.setAntiBandingMode(mode)
+    fun setTorchEnabled(enabled: Boolean) = webcamController.setTorchEnabled(enabled)
+    fun setStudioQualityProcessing(enabled: Boolean) = webcamController.setStudioQualityProcessing(enabled)
+    fun resetIspControls() = webcamController.resetIspControls()
     fun setPreviewEnabled(enabled: Boolean) = webcamController.setPreviewEnabled(enabled)
     fun attachPreviewSurface(surface: Surface?) = webcamController.attachPreviewSurface(surface)
 }

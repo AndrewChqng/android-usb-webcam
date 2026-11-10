@@ -59,10 +59,13 @@ fun SettingsPage() {
         PreferenceCategory(
             title = stringResource(R.string.uvc_gadget_header),
         ) {
-            UvcMaxPacketPreference()
-            UvcMaxBurstPreference()
-            BoostUsbIrqPreference()
-            PureUvcOnlyModePreference()
+            AppSettings.UvcExposedFormatsPreference()
+            AppSettings.UvcMaxPacketPreference()
+            AppSettings.UvcMaxBurstPreference()
+            AppSettings.BoostUsbIrqPreference()
+            AppSettings.PureUvcOnlyModePreference()
+            AppSettings.CustomUsbProductNamePreference()
+            AppSettings.CustomUsbManufacturerNamePreference()
         }
 
         PreferenceCategory(
@@ -191,6 +194,55 @@ private object AppSettings {
             title = stringResource(R.string.experimental_mode_title),
             summary = stringResource(R.string.experimental_mode_summary),
             preference = AppPreference.ExperimentalMode
+        )
+    }
+
+    @Composable
+    fun UvcExposedFormatsPreference(
+        enabled: Boolean = true,
+        settingsViewModel: SettingsViewModel = viewModel()
+    ) {
+        val preferencesState by settingsViewModel.userPreferencesFlow.collectAsState()
+        val selected = preferencesState.uvcExposedFormatsOption
+        val options = UvcExposedFormatsOption.values
+        BasicListPreference(
+            title = stringResource(R.string.uvc_exposed_formats_title),
+            options = options,
+            enabled = enabled,
+            selected = selected,
+            onPreferenceClicked = { opt ->
+                settingsViewModel.setPreference(AppPreference.UvcExposedFormatsPref, opt)
+            }
+        )
+    }
+
+    @Composable
+    fun CustomUsbProductNamePreference(
+        enabled: Boolean = true,
+        settingsViewModel: SettingsViewModel = viewModel()
+    ) {
+        TextDialogPreference(
+            title = stringResource(R.string.custom_usb_product_title),
+            summary = stringResource(R.string.custom_usb_product_summary),
+            enabled = enabled,
+            preference = AppPreference.CustomUsbProductNamePref,
+            property = UserPreferences::customUsbProductName,
+            settingsViewModel = settingsViewModel
+        )
+    }
+
+    @Composable
+    fun CustomUsbManufacturerNamePreference(
+        enabled: Boolean = true,
+        settingsViewModel: SettingsViewModel = viewModel()
+    ) {
+        TextDialogPreference(
+            title = stringResource(R.string.custom_usb_mfg_title),
+            summary = stringResource(R.string.custom_usb_mfg_summary),
+            enabled = enabled,
+            preference = AppPreference.CustomUsbManufacturerNamePref,
+            property = UserPreferences::customUsbManufacturerName,
+            settingsViewModel = settingsViewModel
         )
     }
 

@@ -33,6 +33,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
@@ -140,9 +141,13 @@ fun MainPage(
                 }
 
                 val streamSummary = if (webcamState.isHostStreaming) {
+                    val mbps = (webcamState.measuredFps * webcamState.avgFrameSizeKb * 8f) / 1024f
+                    val totalBytesSec = webcamState.measuredFps * webcamState.avgFrameSizeKb * 1024f
+                    val isocLimit = if (webcamState.boundMaxPacket >= 3072) 24_576_000f else 8_192_000f
+                    val usbPct = ((totalBytesSec / isocLimit) * 100f).coerceIn(0f, 100f)
                     String.format(
                         Locale.US,
-                        "Streaming %s %dx%d @ %dfps • %.1f fps actual (%.1f ms/frame, %.1f KB, %dB pkt)",
+                        "Streaming %s %dx%d @ %dfps\nActual: %.1f fps (%.1f ms/frame, %.1f KB)\nBandwidth: %.2f Mbps (%.0f%% USB bus utilization, %dB pkt)",
                         webcamState.negotiatedFormat,
                         webcamState.negotiatedWidth,
                         webcamState.negotiatedHeight,
@@ -150,6 +155,8 @@ fun MainPage(
                         webcamState.measuredFps,
                         webcamState.avgEncodeTimeMs,
                         webcamState.avgFrameSizeKb,
+                        mbps,
+                        usbPct,
                         webcamState.boundMaxPacket
                     )
                 } else if (webcamState.isUvcLoopRunning) {
@@ -422,6 +429,139 @@ fun MainPage(
                     onValueChange = { mainViewModel.setExposureEv(it) },
                     valueRange = -2.0f..2.0f
                 )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Lock Exposure (AE Lock)", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Freezes exposure level to prevent lighting shifts while presenting.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Switch(
+                        checked = webcamState.aeLock,
+                        onCheckedChange = { mainViewModel.setAeLock(it) }
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Studio ISP Quality", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "High-quality studio noise reduction and edge enhancement (Fast low-latency when off).",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Switch(
+                        checked = webcamState.studioQualityProcessing,
+                        onCheckedChange = { mainViewModel.setStudioQualityProcessing(it) }
+                    )
+                }
+
+                val currentLens = webcamState.availableCameras.firstOrNull { it.cameraId == webcamState.selectedCameraId }
+                if (currentLens?.hasFlash == true) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("LED Video Light", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "Use device LED flash as desk fill light in dim rooms.",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        Switch(
+                            checked = webcamState.torchEnabled,
+                            onCheckedChange = { mainViewModel.setTorchEnabled(it) }
+                        )
+                    }
+                }
+
+                Text(
+                    text = "White Balance (AWB)",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    val awbOptions = listOf(
+                        1 to "Auto",
+                        5 to "Daylight (5500K)",
+                        6 to "Cloudy (6500K)",
+                        2 to "Incandescent (2800K)",
+                        3 to "Fluorescent (4000K)"
+                    )
+                    for ((mode, label) in awbOptions) {
+                        FilterChip(
+                            selected = webcamState.awbMode == mode,
+                            onClick = { mainViewModel.setAwbMode(mode) },
+                            label = { Text(label) }
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Lock White Balance (AWB Lock)", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Freezes color temperature to prevent skin tone color shifts.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Switch(
+                        checked = webcamState.awbLock,
+                        onCheckedChange = { mainViewModel.setAwbLock(it) }
+                    )
+                }
+
+                Text(
+                    text = "Anti-Flicker / Anti-Banding",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    val abOptions = listOf(
+                        3 to "Auto",
+                        1 to "50 Hz (UK/EU/Asia)",
+                        2 to "60 Hz (US/JP)",
+                        0 to "Off"
+                    )
+                    for ((mode, label) in abOptions) {
+                        FilterChip(
+                            selected = webcamState.antiBandingMode == mode,
+                            onClick = { mainViewModel.setAntiBandingMode(mode) },
+                            label = { Text(label) }
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(4.dp))
+
+                OutlinedButton(
+                    onClick = { mainViewModel.resetIspControls() },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Reset Camera & ISP Controls")
+                }
             }
         }
 

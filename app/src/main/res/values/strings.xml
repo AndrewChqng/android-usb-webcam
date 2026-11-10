@@ -87,4 +87,15 @@
     <string name="troubleshooting_title">Troubleshooting</string>
     <string name="export_debug_logs_btn_title">Export debug logs</string>
     <string name="export_debug_logs_btn_summary">Export root, ConfigFS UVC, and V4L2 character device diagnostics.</string>
+
+    <!-- Advanced Customization Preferences -->
+    <string name="custom_usb_product_title">Custom USB Camera Product Name</string>
+    <string name="custom_usb_product_summary">Camera name reported to host PC apps (e.g., \"Pro Streaming Webcam\"). Leave empty to use system default.</string>
+    <string name="custom_usb_mfg_title">Custom USB Manufacturer Name</string>
+    <string name="custom_usb_mfg_summary">Manufacturer string reported to host PC. Leave empty to use system default.</string>
+
+    <string name="uvc_exposed_formats_title">Exposed USB Video Formats</string>
+    <string name="uvc_format_both">Both MJPEG &amp; YUYV (Recommended)</string>
+    <string name="uvc_format_mjpeg_only">MJPEG Only (Compressed, Lowest USB Bandwidth)</string>
+    <string name="uvc_format_yuyv_only">YUYV Only (Uncompressed Raw, High Bandwidth)</string>
 </resources>

@@ -117,6 +117,9 @@ class CharacterDeviceManager private constructor(private val application: Applic
         val maxBurst = prefs.uvcMaxBurst.coerceIn(0, 15)
         val keepAdb = if (prefs.disableGadgetFunctionsDuringConfiguration) "0" else "1"
         val boostIrq = if (prefs.boostUsbIrqPriority) "1" else "0"
+        val exposedFormats = prefs.exposedFormats
+        val customProduct = prefs.customProductName.trim()
+        val customMfg = prefs.customManufacturerName.trim()
 
         val script = """
             G="$gPath"
@@ -125,7 +128,7 @@ class CharacterDeviceManager private constructor(private val application: Applic
             UVC="${'$'}G/functions/uvc.0"
             BACKUP="/data/local/tmp/usb_webcam_saved_links.txt"
 
-            # Save original non-UVC function symlinks once
+            # Save original non-UVC function symlinks and strings once
             if [ ! -f "${'$'}BACKUP" ]; then
                 has_uvc=0
                 for f in "${'$'}CFG"/*; do
@@ -136,12 +139,20 @@ class CharacterDeviceManager private constructor(private val application: Applic
                 if [ "${'$'}has_uvc" = "0" ]; then
                     rm -f "${'$'}BACKUP"
                     echo "CLASS|${'$'}(cat "${'$'}G/bDeviceClass" 2>/dev/null)|${'$'}(cat "${'$'}G/bDeviceSubClass" 2>/dev/null)|${'$'}(cat "${'$'}G/bDeviceProtocol" 2>/dev/null)" >> "${'$'}BACKUP"
+                    echo "STRINGS|${'$'}(cat "${'$'}G/strings/0x409/product" 2>/dev/null)|${'$'}(cat "${'$'}G/strings/0x409/manufacturer" 2>/dev/null)" >> "${'$'}BACKUP"
                     for f in "${'$'}CFG"/*; do
                         [ -L "${'$'}f" ] || continue
                         t=${'$'}(readlink -f "${'$'}f" 2>/dev/null)
                         echo "LINK|${'$'}f|${'$'}t" >> "${'$'}BACKUP"
                     done
                 fi
+            fi
+
+            if [ -n "$customProduct" ]; then
+                echo "$customProduct" > "${'$'}G/strings/0x409/product" 2>/dev/null || true
+            fi
+            if [ -n "$customMfg" ]; then
+                echo "$customMfg" > "${'$'}G/strings/0x409/manufacturer" 2>/dev/null || true
             fi
 
             echo "" > "${'$'}G/UDC" 2>/dev/null || true
@@ -241,8 +252,12 @@ class CharacterDeviceManager private constructor(private val application: Applic
             printf "666666\n1000000\n2000000\n" > "${'$'}UVC/streaming/uncompressed/u/f3_720p/dwFrameInterval"
 
             mkdir -p "${'$'}UVC/streaming/header/h"
-            ln -s "${'$'}UVC/streaming/mjpeg/m" "${'$'}UVC/streaming/header/h/m" 2>/dev/null || true
-            ln -s "${'$'}UVC/streaming/uncompressed/u" "${'$'}UVC/streaming/header/h/u" 2>/dev/null || true
+            if [ "$exposedFormats" != "yuyv" ]; then
+                ln -s "${'$'}UVC/streaming/mjpeg/m" "${'$'}UVC/streaming/header/h/m" 2>/dev/null || true
+            fi
+            if [ "$exposedFormats" != "mjpeg" ]; then
+                ln -s "${'$'}UVC/streaming/uncompressed/u" "${'$'}UVC/streaming/header/h/u" 2>/dev/null || true
+            fi
             ln -s "${'$'}UVC/streaming/header/h" "${'$'}UVC/streaming/class/fs/h" 2>/dev/null || true
             ln -s "${'$'}UVC/streaming/header/h" "${'$'}UVC/streaming/class/hs/h" 2>/dev/null || true
             ln -s "${'$'}UVC/streaming/header/h" "${'$'}UVC/streaming/class/ss/h" 2>/dev/null || true
@@ -458,6 +473,9 @@ class CharacterDeviceManager private constructor(private val application: Applic
                             [ -n "${'$'}a" ] && echo "${'$'}a" > "${'$'}G/bDeviceClass" 2>/dev/null || true
                             [ -n "${'$'}b" ] && echo "${'$'}b" > "${'$'}G/bDeviceSubClass" 2>/dev/null || true
                             [ -n "${'$'}c" ] && echo "${'$'}c" > "${'$'}G/bDeviceProtocol" 2>/dev/null || true
+                        elif [ "${'$'}kind" = "STRINGS" ]; then
+                            [ -n "${'$'}a" ] && echo "${'$'}a" > "${'$'}G/strings/0x409/product" 2>/dev/null || true
+                            [ -n "${'$'}b" ] && echo "${'$'}b" > "${'$'}G/strings/0x409/manufacturer" 2>/dev/null || true
                         elif [ "${'$'}kind" = "LINK" ]; then
                             if [ -d "${'$'}b" ] && [ ! -e "${'$'}a" ]; then
                                 ln -s "${'$'}b" "${'$'}a" 2>/dev/null || true

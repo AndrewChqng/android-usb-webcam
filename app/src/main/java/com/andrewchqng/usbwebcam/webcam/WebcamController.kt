@@ -42,7 +42,8 @@ data class CameraLensInfo(
     val isFrontFacing: Boolean,
     val sensorOrientation: Int,
     val focalLengthMm: Float,
-    val maxZoom: Float = 4.0f
+    val maxZoom: Float = 4.0f,
+    val hasFlash: Boolean = false
 )
 
 data class WebcamStreamState(
@@ -71,6 +72,12 @@ data class WebcamStreamState(
     val videoStabilization: Boolean = false,
     val zoomRatio: Float = 1.0f,
     val exposureEv: Float = 0.0f,
+    val awbMode: Int = 1, // CaptureRequest.CONTROL_AWB_MODE_AUTO
+    val awbLock: Boolean = false,
+    val aeLock: Boolean = false,
+    val antiBandingMode: Int = 3, // CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO
+    val torchEnabled: Boolean = false,
+    val studioQualityProcessing: Boolean = false,
     val isPreviewEnabled: Boolean = false,
     val lastError: String? = null
 )
@@ -157,6 +164,7 @@ class WebcamController private constructor(private val application: Application)
                     else -> "Cam"
                 }
                 val focalStr = if (focal > 0f) " (${String.format("%.1f", focal)}mm)" else ""
+                val hasFlash = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
                 lenses.add(
                     CameraLensInfo(
                         cameraId = id,
@@ -164,7 +172,8 @@ class WebcamController private constructor(private val application: Application)
                         isFrontFacing = isFront,
                         sensorOrientation = orientation,
                         focalLengthMm = focal,
-                        maxZoom = maxDigitalZoom
+                        maxZoom = maxDigitalZoom,
+                        hasFlash = hasFlash
                     )
                 )
             }
@@ -366,6 +375,61 @@ class WebcamController private constructor(private val application: Application)
         updateRepeatingRequestOnFly()
     }
 
+    fun setAwbMode(mode: Int) {
+        if (_state.value.awbMode == mode) return
+        _state.update { it.copy(awbMode = mode) }
+        updateRepeatingRequestOnFly()
+    }
+
+    fun setAwbLock(locked: Boolean) {
+        if (_state.value.awbLock == locked) return
+        _state.update { it.copy(awbLock = locked) }
+        updateRepeatingRequestOnFly()
+    }
+
+    fun setAeLock(locked: Boolean) {
+        if (_state.value.aeLock == locked) return
+        _state.update { it.copy(aeLock = locked) }
+        updateRepeatingRequestOnFly()
+    }
+
+    fun setAntiBandingMode(mode: Int) {
+        if (_state.value.antiBandingMode == mode) return
+        _state.update { it.copy(antiBandingMode = mode) }
+        updateRepeatingRequestOnFly()
+    }
+
+    fun setTorchEnabled(enabled: Boolean) {
+        if (_state.value.torchEnabled == enabled) return
+        _state.update { it.copy(torchEnabled = enabled) }
+        updateRepeatingRequestOnFly()
+    }
+
+    fun setStudioQualityProcessing(enabled: Boolean) {
+        if (_state.value.studioQualityProcessing == enabled) return
+        _state.update { it.copy(studioQualityProcessing = enabled) }
+        updateRepeatingRequestOnFly()
+    }
+
+    fun resetIspControls() {
+        _state.update {
+            it.copy(
+                zoomRatio = 1.0f,
+                exposureEv = 0.0f,
+                awbMode = 1, // CaptureRequest.CONTROL_AWB_MODE_AUTO
+                awbLock = false,
+                aeLock = false,
+                antiBandingMode = 3, // CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO
+                torchEnabled = false,
+                studioQualityProcessing = false,
+                autoFocusEnabled = true,
+                lockConstantFps = true,
+                videoStabilization = false
+            )
+        }
+        updateRepeatingRequestOnFly()
+    }
+
     fun setPreviewEnabled(enabled: Boolean) {
         if (_state.value.isPreviewEnabled == enabled) return
         _state.update { it.copy(isPreviewEnabled = enabled) }
@@ -491,14 +555,34 @@ class WebcamController private constructor(private val application: Application)
     ) {
         val effectiveFps = if (s.targetFpsCap > 0) minOf(s.negotiatedFps, s.targetFpsCap) else s.negotiatedFps
 
-        // Low-latency ISP pipeline flags
-        builder.set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_FAST)
-        builder.set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_FAST)
-        builder.set(CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE, CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE_FAST)
+        // ISP processing quality mode: Fast low-latency vs Studio high-quality
+        if (s.studioQualityProcessing) {
+            builder.set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_HIGH_QUALITY)
+            builder.set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
+            builder.set(CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE, CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE_HIGH_QUALITY)
+            builder.set(CaptureRequest.HOT_PIXEL_MODE, CaptureRequest.HOT_PIXEL_MODE_HIGH_QUALITY)
+        } else {
+            builder.set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_FAST)
+            builder.set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_FAST)
+            builder.set(CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE, CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE_FAST)
+            builder.set(CaptureRequest.HOT_PIXEL_MODE, CaptureRequest.HOT_PIXEL_MODE_FAST)
+        }
 
         // FPS & Auto-Exposure range
         chooseFpsRange(camId, effectiveFps, s.lockConstantFps)?.let { fpsRange ->
             builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange)
+        }
+
+        // Exposure & Auto-White Balance locks and modes
+        builder.set(CaptureRequest.CONTROL_AE_LOCK, s.aeLock)
+        builder.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, s.antiBandingMode)
+        builder.set(CaptureRequest.CONTROL_AWB_MODE, s.awbMode)
+        builder.set(CaptureRequest.CONTROL_AWB_LOCK, s.awbLock)
+
+        // Torch / Flashlight video fill light
+        val lens = s.availableCameras.firstOrNull { it.cameraId == camId }
+        if (lens?.hasFlash == true) {
+            builder.set(CaptureRequest.FLASH_MODE, if (s.torchEnabled) CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF)
         }
 
         // Autofocus mode

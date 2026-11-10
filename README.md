@@ -79,8 +79,19 @@ Any rooted Android 8.0+ (API 26+) device whose kernel has **`CONFIG_USB_CONFIGFS
 - **Rich Camera2 ISP, Focus & Performance Controls**:
   - Switch between any physical sensor (rear main, ultra-wide, telephoto, front-facing camera).
   - **Target FPS Cap** (`Auto`, `60`, `30`, `15 FPS`) and **V4L2 Ring Queue Mode** (`1 buf Ultra-Low Latency`, `2 bufs Tear-Free Balanced`, `3 bufs Max Smoothness`).
-  - **Camera2 ISP Controls**: Continuous Autofocus vs. Infinity Focus Lock, Constant Framerate AE Priority, Video Stabilization (EIS) toggle, Digital Zoom (`1.0x–4.0x`), and Exposure Compensation (`-2.0 to +2.0 EV`).
-  - On-the-fly orientation adjustment (`0°`, `90°`, `180°`, `270°`), horizontal mirroring, MJPEG quality slider (`50%–95%`), and live telemetry (`Actual FPS`, `ms/frame`, `KB/frame`, `USB packet size`).
+  - **Camera2 ISP & Lighting Controls**:
+    - **Auto-White Balance (AWB) & Color Lock**: Switch between Auto, Daylight (5500K), Cloudy (6500K), Incandescent (2800K), and Fluorescent (4000K), plus **AWB Lock** to lock skin tones during calls.
+    - **Auto-Exposure Lock (AE Lock)**: Freeze exposure level to prevent flickering and lighting shifts when presenting papers or moving hands in frame.
+    - **Anti-Flicker / Anti-Banding**: Eliminates room lighting flicker and rolling bars under 50 Hz (UK/EU/Asia) or 60 Hz (US/JP) AC lighting.
+    - **Studio ISP Quality Mode**: Toggles high-quality studio noise reduction, edge enhancement, and hot pixel suppression (vs. low-latency fast mode).
+    - **LED Video Light**: Use phone rear flash as a desk fill light in dim rooms.
+    - Continuous Autofocus vs. Infinity Focus Lock, Constant Framerate AE Priority, Video Stabilization (EIS) toggle, Digital Zoom (`1.0x–4.0x`), and Exposure Compensation (`-2.0 to +2.0 EV`).
+    - Quick "Reset Camera & ISP Controls" button to instantly restore all camera parameters to default.
+  - **Live Performance & USB Bus Telemetry**: Real-time FPS, frame compression time (ms/frame), frame size (KB), video bit rate (Mbps), and actual USB High-Speed bus utilization percentage.
+  - **Custom USB Gadget Configuration**:
+    - **Custom USB Product & Manufacturer Names**: Set custom names (e.g., "Pro Studio Cam") reported to host device managers and applications.
+    - **Exposed USB Formats Selector**: Expose Both MJPEG & YUYV, MJPEG-Only (bandwidth-constrained hosts), or YUYV-Only (uncompressed raw).
+  - **On-the-fly orientation adjustment** (`0°`, `90°`, `180°`, `270°`), horizontal mirroring, MJPEG quality slider (`50%–95%`), and configurable V4L2 queue modes.
   - **Real-Time USB Controller IRQ Boost & Affinity Pinning**: Automatically elevates `irq/*-dwc3` kernel threads to `SCHED_FIFO` priority 90 (`-20` nice) and pins IRQ affinity to performance cores (`CPU 2-3`), preventing OEM vendor schedulers from starving USB isochronous TRBs and eliminating dropped microframe errors (`-EXDEV`).
   - **High-Bandwidth Isochronous USB Streaming**: Defaults to 3072 bytes/microframe (3×1024 high-bandwidth ISOC, ~24.6 MB/s), unlocking full 30 fps uncompressed YUYV and high-bitrate MJPEG over USB 2.0 High-Speed.
 

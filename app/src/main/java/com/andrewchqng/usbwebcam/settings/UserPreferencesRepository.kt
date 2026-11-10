@@ -76,9 +76,44 @@ sealed class AppPreference(val preference: PreferenceKey<*>) {
     )
 
     data object BoostUsbIrqPriority : BooleanPreferenceKey("boost_usb_irq_priority", true)
+
+    data object UvcExposedFormatsPref : ObjectPreferenceKey<UvcExposedFormatsOption>(
+        "uvc_exposed_formats", UvcExposedFormatsOption.Both,
+        fromStringPreference = {
+            when (it) {
+                UvcExposedFormatsOption.MjpegOnly.key -> UvcExposedFormatsOption.MjpegOnly
+                UvcExposedFormatsOption.YuyvOnly.key -> UvcExposedFormatsOption.YuyvOnly
+                else -> UvcExposedFormatsOption.Both
+            }
+        },
+        toStringPreference = { it.key }
+    )
+
+    data object CustomUsbProductNamePref : ObjectPreferenceKey<String>(
+        "custom_usb_product_name", "",
+        fromStringPreference = { it },
+        toStringPreference = { it }
+    )
+
+    data object CustomUsbManufacturerNamePref : ObjectPreferenceKey<String>(
+        "custom_usb_manufacturer_name", "",
+        fromStringPreference = { it },
+        toStringPreference = { it }
+    )
 }
 
 sealed class SealedString(val key: String, @StringRes val id: Int)
+
+sealed class UvcExposedFormatsOption(key: String, @StringRes id: Int) : SealedString(key, id) {
+    data object Both : UvcExposedFormatsOption("both", R.string.uvc_format_both)
+    data object MjpegOnly : UvcExposedFormatsOption("mjpeg", R.string.uvc_format_mjpeg_only)
+    data object YuyvOnly : UvcExposedFormatsOption("yuyv", R.string.uvc_format_yuyv_only)
+
+    companion object {
+        val values: List<UvcExposedFormatsOption>
+            get() = listOf(Both, MjpegOnly, YuyvOnly)
+    }
+}
 
 sealed class AppTheme(key: String, @StringRes id: Int) : SealedString(key, id) {
     data object System : AppTheme("system", R.string.app_theme_system)
@@ -126,6 +161,9 @@ data class UserPreferences(
     val uvcMaxPacketOption: UvcMaxPacketOption,
     val uvcMaxBurstOption: UvcMaxBurstOption,
     val boostUsbIrqPriority: Boolean,
+    val uvcExposedFormatsOption: UvcExposedFormatsOption = UvcExposedFormatsOption.Both,
+    val customUsbProductName: String = "",
+    val customUsbManufacturerName: String = "",
 )
 
 @Parcelize
@@ -137,6 +175,9 @@ data class GadgetUserPreferences(
     val uvcMaxPacketSize: Int = 3072,
     val uvcMaxBurst: Int = 0,
     val boostUsbIrqPriority: Boolean = true,
+    val exposedFormats: String = "both",
+    val customProductName: String = "",
+    val customManufacturerName: String = "",
 ) : Parcelable {
     companion object {
         fun fromUserPreferences(userPreferences: UserPreferences): GadgetUserPreferences {
@@ -148,6 +189,9 @@ data class GadgetUserPreferences(
                 uvcMaxPacketSize = userPreferences.uvcMaxPacketOption.bytes,
                 uvcMaxBurst = userPreferences.uvcMaxBurstOption.burst,
                 boostUsbIrqPriority = userPreferences.boostUsbIrqPriority,
+                exposedFormats = userPreferences.uvcExposedFormatsOption.key,
+                customProductName = userPreferences.customUsbProductName,
+                customManufacturerName = userPreferences.customUsbManufacturerName,
             )
         }
     }
@@ -177,6 +221,9 @@ class UserPreferencesRepository private constructor(application: Application) {
                 uvcMaxPacketOption = AppPreference.UvcMaxPacketSizePref.getValue(),
                 uvcMaxBurstOption = AppPreference.UvcMaxBurstPref.getValue(),
                 boostUsbIrqPriority = AppPreference.BoostUsbIrqPriority.getValue(),
+                uvcExposedFormatsOption = AppPreference.UvcExposedFormatsPref.getValue(),
+                customUsbProductName = AppPreference.CustomUsbProductNamePref.getValue(),
+                customUsbManufacturerName = AppPreference.CustomUsbManufacturerNamePref.getValue(),
             )
         }
 
