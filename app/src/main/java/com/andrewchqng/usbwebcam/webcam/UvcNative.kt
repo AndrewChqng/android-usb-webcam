@@ -12,7 +12,7 @@ object UvcNative {
         System.loadLibrary("usb_webcam")
     }
 
-    external fun nativeOpen(devicePath: String, maxPayloadSize: Int = 1024): Int
+    external fun nativeOpen(devicePath: String, maxPayloadSize: Int = 1024, isYuyvOnly: Boolean = false): Int
     external fun nativeRunEventLoop(callback: UvcEventCallback)
     external fun nativeClose()
 

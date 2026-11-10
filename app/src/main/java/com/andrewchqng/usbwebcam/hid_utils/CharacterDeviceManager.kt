@@ -200,7 +200,7 @@ class CharacterDeviceManager private constructor(private val application: Applic
             ln -s "${'$'}UVC/control/header/h" "${'$'}UVC/control/class/fs/h" 2>/dev/null || true
             ln -s "${'$'}UVC/control/header/h" "${'$'}UVC/control/class/ss/h" 2>/dev/null || true
 
-            mkdir -p "${'$'}UVC/streaming/mjpeg/m/f1_360p" "${'$'}UVC/streaming/mjpeg/m/f2_720p" "${'$'}UVC/streaming/mjpeg/m/f3_1080p"
+            mkdir -p "${'$'}UVC/streaming/mjpeg/m/f1_360p" "${'$'}UVC/streaming/mjpeg/m/f2_480p" "${'$'}UVC/streaming/mjpeg/m/f3_720p" "${'$'}UVC/streaming/mjpeg/m/f4_1080p"
             echo 640 > "${'$'}UVC/streaming/mjpeg/m/f1_360p/wWidth"
             echo 360 > "${'$'}UVC/streaming/mjpeg/m/f1_360p/wHeight"
             echo 18432000 > "${'$'}UVC/streaming/mjpeg/m/f1_360p/dwMinBitRate"
@@ -209,21 +209,29 @@ class CharacterDeviceManager private constructor(private val application: Applic
             echo 333333 > "${'$'}UVC/streaming/mjpeg/m/f1_360p/dwDefaultFrameInterval"
             printf "166666\n333333\n666666\n" > "${'$'}UVC/streaming/mjpeg/m/f1_360p/dwFrameInterval"
 
-            echo 1280 > "${'$'}UVC/streaming/mjpeg/m/f2_720p/wWidth"
-            echo 720 > "${'$'}UVC/streaming/mjpeg/m/f2_720p/wHeight"
-            echo 29491200 > "${'$'}UVC/streaming/mjpeg/m/f2_720p/dwMinBitRate"
-            echo 221184000 > "${'$'}UVC/streaming/mjpeg/m/f2_720p/dwMaxBitRate"
-            echo 1843200 > "${'$'}UVC/streaming/mjpeg/m/f2_720p/dwMaxVideoFrameBufferSize"
-            echo 333333 > "${'$'}UVC/streaming/mjpeg/m/f2_720p/dwDefaultFrameInterval"
-            printf "166666\n333333\n666666\n" > "${'$'}UVC/streaming/mjpeg/m/f2_720p/dwFrameInterval"
+            echo 640 > "${'$'}UVC/streaming/mjpeg/m/f2_480p/wWidth"
+            echo 480 > "${'$'}UVC/streaming/mjpeg/m/f2_480p/wHeight"
+            echo 24576000 > "${'$'}UVC/streaming/mjpeg/m/f2_480p/dwMinBitRate"
+            echo 147456000 > "${'$'}UVC/streaming/mjpeg/m/f2_480p/dwMaxBitRate"
+            echo 614400 > "${'$'}UVC/streaming/mjpeg/m/f2_480p/dwMaxVideoFrameBufferSize"
+            echo 333333 > "${'$'}UVC/streaming/mjpeg/m/f2_480p/dwDefaultFrameInterval"
+            printf "166666\n333333\n666666\n" > "${'$'}UVC/streaming/mjpeg/m/f2_480p/dwFrameInterval"
 
-            echo 1920 > "${'$'}UVC/streaming/mjpeg/m/f3_1080p/wWidth"
-            echo 1080 > "${'$'}UVC/streaming/mjpeg/m/f3_1080p/wHeight"
-            echo 66355200 > "${'$'}UVC/streaming/mjpeg/m/f3_1080p/dwMinBitRate"
-            echo 497664000 > "${'$'}UVC/streaming/mjpeg/m/f3_1080p/dwMaxBitRate"
-            echo 4147200 > "${'$'}UVC/streaming/mjpeg/m/f3_1080p/dwMaxVideoFrameBufferSize"
-            echo 333333 > "${'$'}UVC/streaming/mjpeg/m/f3_1080p/dwDefaultFrameInterval"
-            printf "166666\n333333\n666666\n" > "${'$'}UVC/streaming/mjpeg/m/f3_1080p/dwFrameInterval"
+            echo 1280 > "${'$'}UVC/streaming/mjpeg/m/f3_720p/wWidth"
+            echo 720 > "${'$'}UVC/streaming/mjpeg/m/f3_720p/wHeight"
+            echo 29491200 > "${'$'}UVC/streaming/mjpeg/m/f3_720p/dwMinBitRate"
+            echo 221184000 > "${'$'}UVC/streaming/mjpeg/m/f3_720p/dwMaxBitRate"
+            echo 1843200 > "${'$'}UVC/streaming/mjpeg/m/f3_720p/dwMaxVideoFrameBufferSize"
+            echo 333333 > "${'$'}UVC/streaming/mjpeg/m/f3_720p/dwDefaultFrameInterval"
+            printf "166666\n333333\n666666\n" > "${'$'}UVC/streaming/mjpeg/m/f3_720p/dwFrameInterval"
+
+            echo 1920 > "${'$'}UVC/streaming/mjpeg/m/f4_1080p/wWidth"
+            echo 1080 > "${'$'}UVC/streaming/mjpeg/m/f4_1080p/wHeight"
+            echo 66355200 > "${'$'}UVC/streaming/mjpeg/m/f4_1080p/dwMinBitRate"
+            echo 497664000 > "${'$'}UVC/streaming/mjpeg/m/f4_1080p/dwMaxBitRate"
+            echo 4147200 > "${'$'}UVC/streaming/mjpeg/m/f4_1080p/dwMaxVideoFrameBufferSize"
+            echo 333333 > "${'$'}UVC/streaming/mjpeg/m/f4_1080p/dwDefaultFrameInterval"
+            printf "166666\n333333\n666666\n" > "${'$'}UVC/streaming/mjpeg/m/f4_1080p/dwFrameInterval"
             echo 0x04 > "${'$'}UVC/streaming/mjpeg/m/bmaControls" 2>/dev/null || true
 
             mkdir -p "${'$'}UVC/streaming/uncompressed/u/f1_360p" "${'$'}UVC/streaming/uncompressed/u/f2_480p" "${'$'}UVC/streaming/uncompressed/u/f3_720p"

@@ -44,5 +44,5 @@ struct UvcFormatDesc {
     uint8_t formatIndex;
     uint32_t fourcc; // V4L2_PIX_FMT_MJPEG or V4L2_PIX_FMT_YUYV
     uint8_t numFrames;
-    UvcFrameDesc frames[3];
+    UvcFrameDesc frames[4];
 };

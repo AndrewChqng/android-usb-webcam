@@ -22,7 +22,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.MoreVert
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -40,8 +39,6 @@ import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -291,60 +288,20 @@ fun MainPage(
                     )
                 }
 
-                var showCustomQualityDialog by remember { mutableStateOf(false) }
-                var customQualityInput by remember { mutableStateOf(webcamState.jpegQuality.toString()) }
-
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "MJPEG Quality: ${webcamState.jpegQuality}%",
+                        text = "MJPEG Compression Quality",
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold
                     )
-                    TextButton(onClick = {
-                        customQualityInput = webcamState.jpegQuality.toString()
-                        showCustomQualityDialog = true
-                    }) {
-                        Text("Custom %")
-                    }
-                }
-
-                if (showCustomQualityDialog) {
-                    AlertDialog(
-                        onDismissRequest = { showCustomQualityDialog = false },
-                        title = { Text("Custom MJPEG Quality") },
-                        text = {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("Enter exact JPEG compression quality percentage (1–100):")
-                                TextField(
-                                    value = customQualityInput,
-                                    onValueChange = { input ->
-                                        customQualityInput = input.filter { it.isDigit() }
-                                    },
-                                    placeholder = { Text("1-100") },
-                                    singleLine = true
-                                )
-                            }
-                        },
-                        confirmButton = {
-                            TextButton(onClick = {
-                                val parsed = customQualityInput.toIntOrNull()
-                                if (parsed != null) {
-                                    mainViewModel.setJpegQuality(parsed.coerceIn(1, 100))
-                                }
-                                showCustomQualityDialog = false
-                            }) {
-                                Text("Apply")
-                            }
-                        },
-                        dismissButton = {
-                            TextButton(onClick = { showCustomQualityDialog = false }) {
-                                Text("Cancel")
-                            }
-                        }
+                    Text(
+                        text = "${webcamState.jpegQuality}%",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold
                     )
                 }
 
@@ -354,25 +311,12 @@ fun MainPage(
                     valueRange = 1f..100f
                 )
 
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    val qualityPresets = listOf(
-                        25 to "25% (Low)",
-                        50 to "50% (Med)",
-                        75 to "75% (High)",
-                        82 to "82% (Opt)",
-                        95 to "95% (Pro)",
-                        100 to "100% (Max)"
+                if (webcamState.isHostStreaming && webcamState.negotiatedFormat.equals("YUYV", ignoreCase = true)) {
+                    Text(
+                        text = "Notice: Host negotiated raw uncompressed YUYV. The MJPEG slider only controls MJPEG compression. In Settings, keep 'Exposed UVC Formats' on 'MJPEG Only' to stream MJPEG.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
                     )
-                    for ((q, label) in qualityPresets) {
-                        FilterChip(
-                            selected = webcamState.jpegQuality == q,
-                            onClick = { mainViewModel.setJpegQuality(q) },
-                            label = { Text(label) }
-                        )
-                    }
                 }
 
                 Text(

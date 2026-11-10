@@ -20,11 +20,13 @@ import android.util.Range
 import android.util.Size
 import android.view.Surface
 import com.andrewchqng.usbwebcam.hid_utils.CharacterDeviceManager
+import com.andrewchqng.usbwebcam.settings.UvcExposedFormatsOption
 import com.andrewchqng.usbwebcam.settings.UserPreferencesRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -116,6 +118,7 @@ class WebcamController private constructor(private val application: Application)
     val state: StateFlow<WebcamStreamState> = _state.asStateFlow()
 
     private var uvcLoopJob: Job? = null
+    private var saveJpegQualityJob: Job? = null
 
     private var cameraThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
@@ -201,7 +204,13 @@ class WebcamController private constructor(private val application: Application)
     fun startUvcSession(videoDevicePath: String, maxPayloadSize: Int = 3072): Boolean {
         stopUvcSession()
 
-        val fdOrErr = UvcNative.nativeOpen(videoDevicePath, maxPayloadSize)
+        val isYuyvOnly = try {
+            UserPreferencesRepository.getInstance(application).userPreferencesFlow.value.uvcExposedFormatsOption == UvcExposedFormatsOption.YuyvOnly
+        } catch (_: Exception) {
+            false
+        }
+
+        val fdOrErr = UvcNative.nativeOpen(videoDevicePath, maxPayloadSize, isYuyvOnly)
         if (fdOrErr < 0) {
             val errMsg = "Failed to open $videoDevicePath (errno=${-fdOrErr})"
             Timber.e(errMsg)
@@ -341,11 +350,15 @@ class WebcamController private constructor(private val application: Application)
     fun setJpegQuality(quality: Int) {
         val clamped = quality.coerceIn(1, 100)
         _state.update { it.copy(jpegQuality = clamped) }
-        runCatching {
-            UserPreferencesRepository.getInstance(application).setPreference(
-                com.andrewchqng.usbwebcam.settings.AppPreference.JpegQualityPref,
-                clamped
-            )
+        saveJpegQualityJob?.cancel()
+        saveJpegQualityJob = scope.launch {
+            delay(250)
+            runCatching {
+                UserPreferencesRepository.getInstance(application).setPreference(
+                    com.andrewchqng.usbwebcam.settings.AppPreference.JpegQualityPref,
+                    clamped
+                )
+            }
         }
     }
 

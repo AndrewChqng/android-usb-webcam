@@ -37,17 +37,19 @@ namespace {
 constexpr int kNumV4l2Buffers = 6;
 
 // Format table matching our ConfigFS layout in CharacterDeviceManager.kt:
-// Format 1: MJPEG (1: 640x360, 2: 1280x720, 3: 1920x1080)
-// Format 2: YUYV  (1: 640x360, 2: 640x480,  3: 1280x720)
-static const UvcFormatDesc kSupportedFormats[2] = {
+// When both/mjpeg: Format 1 is MJPEG (1: 640x360, 2: 640x480, 3: 1280x720, 4: 1920x1080)
+//                  Format 2 is YUYV  (1: 640x360, 2: 640x480, 3: 1280x720)
+// When yuyv only:  Format 1 is YUYV  (1: 640x360, 2: 640x480, 3: 1280x720)
+static const UvcFormatDesc kFormatsBothOrMjpeg[2] = {
     {
         .formatIndex = 1,
         .fourcc = V4L2_PIX_FMT_MJPEG,
-        .numFrames = 3,
+        .numFrames = 4,
         .frames = {
             {1, 640, 360, 333333, {166666, 333333, 666666, 0}},
-            {2, 1280, 720, 333333, {166666, 333333, 666666, 0}},
-            {3, 1920, 1080, 333333, {166666, 333333, 666666, 0}},
+            {2, 640, 480, 333333, {166666, 333333, 666666, 0}},
+            {3, 1280, 720, 333333, {166666, 333333, 666666, 0}},
+            {4, 1920, 1080, 333333, {166666, 333333, 666666, 0}},
         },
     },
     {
@@ -58,6 +60,21 @@ static const UvcFormatDesc kSupportedFormats[2] = {
             {1, 640, 360, 333333, {333333, 666666, 1000000, 0}},
             {2, 640, 480, 333333, {333333, 666666, 1000000, 0}},
             {3, 1280, 720, 666666, {666666, 1000000, 2000000, 0}},
+            {0, 0, 0, 0, {0, 0, 0, 0}},
+        },
+    },
+};
+
+static const UvcFormatDesc kFormatsYuyvOnly[1] = {
+    {
+        .formatIndex = 1,
+        .fourcc = V4L2_PIX_FMT_YUYV,
+        .numFrames = 3,
+        .frames = {
+            {1, 640, 360, 333333, {333333, 666666, 1000000, 0}},
+            {2, 640, 480, 333333, {333333, 666666, 1000000, 0}},
+            {3, 1280, 720, 666666, {666666, 1000000, 2000000, 0}},
+            {0, 0, 0, 0, {0, 0, 0, 0}},
         },
     },
 };
@@ -83,6 +100,7 @@ struct UvcContext {
     uint32_t active_interval = 333333;
 
     std::atomic<bool> is_streaming{false};
+    bool is_yuyv_only = false;
     std::mutex stream_mutex;
     MmapBuffer buffers[kNumV4l2Buffers]{};
     uint32_t num_buffers = 0;
@@ -120,8 +138,12 @@ void fillStreamingControl(
 ) {
     memset(ctrl, 0, sizeof(*ctrl));
 
-    int fmtIdx = (formatIndex >= 1 && formatIndex <= 2) ? (formatIndex - 1) : 0;
-    const UvcFormatDesc& fmt = kSupportedFormats[fmtIdx];
+    const bool yuyvOnly = (ctx != nullptr && ctx->is_yuyv_only);
+    const UvcFormatDesc* formats = yuyvOnly ? kFormatsYuyvOnly : kFormatsBothOrMjpeg;
+    int maxFmt = yuyvOnly ? 1 : 2;
+
+    int fmtIdx = (formatIndex >= 1 && formatIndex <= maxFmt) ? (formatIndex - 1) : 0;
+    const UvcFormatDesc& fmt = formats[fmtIdx];
 
     int frmIdx = (frameIndex >= 1 && frameIndex <= fmt.numFrames) ? (frameIndex - 1) : 0;
     const UvcFrameDesc& frm = fmt.frames[frmIdx];
@@ -386,8 +408,12 @@ void handleUvcDataEvent(UvcContext* ctx, const struct uvc_request_data& data) {
     if (ctx->current_control == UVC_VS_COMMIT_CONTROL) {
         ctx->commit_ctrl = resolved;
 
-        int fmtIdx = (resolved.bFormatIndex >= 1 && resolved.bFormatIndex <= 2) ? (resolved.bFormatIndex - 1) : 0;
-        const UvcFormatDesc& fmt = kSupportedFormats[fmtIdx];
+        const bool yuyvOnly = ctx->is_yuyv_only;
+        const UvcFormatDesc* formats = yuyvOnly ? kFormatsYuyvOnly : kFormatsBothOrMjpeg;
+        int maxFmt = yuyvOnly ? 1 : 2;
+
+        int fmtIdx = (resolved.bFormatIndex >= 1 && resolved.bFormatIndex <= maxFmt) ? (resolved.bFormatIndex - 1) : 0;
+        const UvcFormatDesc& fmt = formats[fmtIdx];
         int frmIdx = (resolved.bFrameIndex >= 1 && resolved.bFrameIndex <= fmt.numFrames) ? (resolved.bFrameIndex - 1) : 0;
         const UvcFrameDesc& frm = fmt.frames[frmIdx];
 
@@ -582,7 +608,8 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeOpen(
     JNIEnv* env,
     jobject /* thiz */,
     jstring jDevicePath,
-    jint maxPayloadSize
+    jint maxPayloadSize,
+    jboolean isYuyvOnly
 ) {
     std::lock_guard<std::mutex> lock(g_ctx_mutex);
 
@@ -603,7 +630,7 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeOpen(
         env->ReleaseStringUTFChars(jDevicePath, path);
         return -err;
     }
-    LOGI("Opened UVC V4L2 device: %s (fd=%d, maxPayload=%d)", path, fd, maxPayloadSize);
+    LOGI("Opened UVC V4L2 device: %s (fd=%d, maxPayload=%d, isYuyvOnly=%d)", path, fd, maxPayloadSize, isYuyvOnly);
     env->ReleaseStringUTFChars(jDevicePath, path);
 
     struct v4l2_capability cap {};
@@ -618,10 +645,17 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeOpen(
     ctx->v4l2_fd = fd;
     ctx->stop_efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     ctx->max_payload_size = (maxPayloadSize > 0) ? static_cast<uint32_t>(maxPayloadSize) : 1024u;
+    ctx->is_yuyv_only = (isYuyvOnly == JNI_TRUE);
 
-    // Default to 1280x720 MJPEG @ 30fps
-    fillStreamingControl(ctx, &ctx->probe_ctrl, 1, 2, 333333);
-    fillStreamingControl(ctx, &ctx->commit_ctrl, 1, 2, 333333);
+    if (ctx->is_yuyv_only) {
+        // Default to 1280x720 YUYV (frame index 3)
+        fillStreamingControl(ctx, &ctx->probe_ctrl, 1, 3, 666666);
+        fillStreamingControl(ctx, &ctx->commit_ctrl, 1, 3, 666666);
+    } else {
+        // Default to 1280x720 MJPEG @ 30fps (frame index 3)
+        fillStreamingControl(ctx, &ctx->probe_ctrl, 1, 3, 333333);
+        fillStreamingControl(ctx, &ctx->commit_ctrl, 1, 3, 333333);
+    }
 
     for (uint32_t evType = UVC_EVENT_FIRST; evType <= UVC_EVENT_LAST; ++evType) {
         struct v4l2_event_subscription sub {};
