@@ -204,12 +204,12 @@ class WebcamWebServer private constructor(private val application: Application) 
             }
 
             when {
-                method == "GET" && (path == "/" || path == "/index.html") -> {
-                    sendResponse(outputStream, 200, "OK", "text/html; charset=UTF-8", INDEX_HTML)
+                (method == "GET" || method == "HEAD") && (path == "/" || path == "/index.html") -> {
+                    sendResponse(outputStream, 200, "OK", "text/html; charset=UTF-8", if (method == "HEAD") "" else INDEX_HTML)
                 }
-                method == "GET" && path == "/api/status" -> {
+                (method == "GET" || method == "HEAD") && path == "/api/status" -> {
                     val json = buildStatusJson()
-                    sendResponse(outputStream, 200, "OK", "application/json; charset=UTF-8", json.toString())
+                    sendResponse(outputStream, 200, "OK", "application/json; charset=UTF-8", if (method == "HEAD") "" else json.toString())
                 }
                 method == "POST" && path == "/api/action" -> {
                     handleAction(body)

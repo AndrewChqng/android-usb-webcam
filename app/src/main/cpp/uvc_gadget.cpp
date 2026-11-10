@@ -752,7 +752,15 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeRunEventLoop(
 
     jclass cbClass = env->GetObjectClass(callback);
     jmethodID onStreamStateChanged = env->GetMethodID(cbClass, "onStreamStateChanged", "(ZZIII)V");
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        LOGE("Failed to find onStreamStateChanged method ID");
+    }
     jmethodID onHostConnectionChanged = env->GetMethodID(cbClass, "onHostConnectionChanged", "(Z)V");
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        LOGE("Failed to find onHostConnectionChanged method ID");
+    }
 
     struct pollfd pfds[2]{};
     pfds[0].fd = ctx->v4l2_fd;
@@ -786,7 +794,9 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeRunEventLoop(
                 switch (v4l2_ev.type) {
                     case UVC_EVENT_CONNECT:
                         LOGI("UVC_EVENT_CONNECT (speed=%d)", uvc_ev->speed);
-                        env->CallVoidMethod(callback, onHostConnectionChanged, JNI_TRUE);
+                        if (onHostConnectionChanged) {
+                            env->CallVoidMethod(callback, onHostConnectionChanged, JNI_TRUE);
+                        }
                         break;
 
                     case UVC_EVENT_DISCONNECT: {
@@ -796,8 +806,12 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeRunEventLoop(
                             // Do not call VIDIOC_STREAMOFF on DISCONNECT if not in delayed_status
                             stopV4l2StreamingLocked(ctx, false);
                         }
-                        env->CallVoidMethod(callback, onStreamStateChanged, JNI_FALSE, JNI_TRUE, 0, 0, 0);
-                        env->CallVoidMethod(callback, onHostConnectionChanged, JNI_FALSE);
+                        if (onStreamStateChanged) {
+                            env->CallVoidMethod(callback, onStreamStateChanged, JNI_FALSE, JNI_TRUE, 0, 0, 0);
+                        }
+                        if (onHostConnectionChanged) {
+                            env->CallVoidMethod(callback, onHostConnectionChanged, JNI_FALSE);
+                        }
                         break;
                     }
 
@@ -821,7 +835,7 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeRunEventLoop(
                             std::lock_guard<std::mutex> slock(ctx->stream_mutex);
                             started = startV4l2StreamingLocked(ctx);
                         }
-                        if (started) {
+                        if (started && onStreamStateChanged) {
                             bool isMjpeg = (ctx->active_fourcc == V4L2_PIX_FMT_MJPEG);
                             int fps = (ctx->active_interval > 0) ? static_cast<int>(10000000u / ctx->active_interval) : 30;
                             env->CallVoidMethod(
@@ -843,7 +857,9 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeRunEventLoop(
                             std::lock_guard<std::mutex> slock(ctx->stream_mutex);
                             stopV4l2StreamingLocked(ctx, true);
                         }
-                        env->CallVoidMethod(callback, onStreamStateChanged, JNI_FALSE, JNI_TRUE, 0, 0, 0);
+                        if (onStreamStateChanged) {
+                            env->CallVoidMethod(callback, onStreamStateChanged, JNI_FALSE, JNI_TRUE, 0, 0, 0);
+                        }
                         break;
                     }
 
