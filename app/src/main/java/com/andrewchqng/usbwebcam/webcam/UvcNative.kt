@@ -36,6 +36,9 @@ object UvcNative {
         uvPixelStride: Int,
         rotation: Int,
         mirror: Boolean,
+        zoom: Float,
+        panX: Float,
+        panY: Float,
         maxInFlight: Int
     ): Boolean
 
@@ -52,6 +55,9 @@ object UvcNative {
         dstHeight: Int,
         rotation: Int,
         mirror: Boolean,
+        zoom: Float,
+        panX: Float,
+        panY: Float,
         outNv21: ByteArray
     )
 }

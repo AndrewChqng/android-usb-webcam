@@ -444,6 +444,7 @@ void buildCoordinateLuts(
     int dstW, int dstH,
     int srcW, int srcH,
     int rotation, bool mirror,
+    float zoom, float panX, float panY,
     bool& swappedAxes,
     std::vector<int>& lutForDestX,
     std::vector<int>& lutForDestY
@@ -452,18 +453,52 @@ void buildCoordinateLuts(
     const int rw = swappedAxes ? dstH : dstW;
     const int rh = swappedAxes ? dstW : dstH;
 
-    int croppedSrcW = srcW;
-    int croppedSrcH = srcH;
-    int offsetX = 0;
-    int offsetY = 0;
-
-    if (srcW * rh > srcH * rw) {
-        croppedSrcW = (srcH * rw) / rh;
-        offsetX = (srcW - croppedSrcW) / 2;
-    } else if (srcW * rh < srcH * rw) {
-        croppedSrcH = (srcW * rh) / rw;
-        offsetY = (srcH - croppedSrcH) / 2;
+    int baseW = srcW;
+    int baseH = srcH;
+    if (static_cast<int64_t>(srcW) * rh > static_cast<int64_t>(srcH) * rw) {
+        baseW = static_cast<int>((static_cast<int64_t>(srcH) * rw) / rh);
+    } else if (static_cast<int64_t>(srcW) * rh < static_cast<int64_t>(srcH) * rw) {
+        baseH = static_cast<int>((static_cast<int64_t>(srcW) * rh) / rw);
     }
+
+    const float z = (zoom >= 1.0f) ? zoom : 1.0f;
+    int croppedSrcW = static_cast<int>(baseW / z);
+    int croppedSrcH = static_cast<int>(baseH / z);
+    if (croppedSrcW < 16) croppedSrcW = 16;
+    if (croppedSrcH < 16) croppedSrcH = 16;
+    if (croppedSrcW > srcW) croppedSrcW = srcW;
+    if (croppedSrcH > srcH) croppedSrcH = srcH;
+
+    const int maxPanX = srcW - croppedSrcW;
+    const int maxPanY = srcH - croppedSrcH;
+
+    float userX = mirror ? -panX : panX;
+    float userY = panY;
+
+    float sensorPanX = userX;
+    float sensorPanY = userY;
+    switch (rotation) {
+        case 90:
+            sensorPanX = userY;
+            sensorPanY = -userX;
+            break;
+        case 180:
+            sensorPanX = -userX;
+            sensorPanY = -userY;
+            break;
+        case 270:
+            sensorPanX = -userY;
+            sensorPanY = userX;
+            break;
+        default:
+            break;
+    }
+
+    const float normX = ((sensorPanX < -1.0f ? -1.0f : (sensorPanX > 1.0f ? 1.0f : sensorPanX)) + 1.0f) * 0.5f;
+    const float normY = ((sensorPanY < -1.0f ? -1.0f : (sensorPanY > 1.0f ? 1.0f : sensorPanY)) + 1.0f) * 0.5f;
+
+    const int offsetX = static_cast<int>(normX * maxPanX);
+    const int offsetY = static_cast<int>(normY * maxPanY);
 
     lutForDestX.resize(dstW);
     lutForDestY.resize(dstH);
@@ -473,14 +508,14 @@ void buildCoordinateLuts(
         for (int dx = 0; dx < dstW; ++dx) {
             int mx = mirror ? (dstW - 1 - dx) : dx;
             int rx = (rotation == 180) ? (dstW - 1 - mx) : mx;
-            int sx = offsetX + (rx * croppedSrcW) / rw;
+            int sx = offsetX + static_cast<int>((static_cast<int64_t>(rx) * croppedSrcW) / rw);
             if (sx < 0) sx = 0;
             else if (sx >= srcW) sx = srcW - 1;
             lutForDestX[dx] = sx;
         }
         for (int dy = 0; dy < dstH; ++dy) {
             int ry = (rotation == 180) ? (dstH - 1 - dy) : dy;
-            int sy = offsetY + (ry * croppedSrcH) / rh;
+            int sy = offsetY + static_cast<int>((static_cast<int64_t>(ry) * croppedSrcH) / rh);
             if (sy < 0) sy = 0;
             else if (sy >= srcH) sy = srcH - 1;
             lutForDestY[dy] = sy;
@@ -490,14 +525,14 @@ void buildCoordinateLuts(
         for (int dx = 0; dx < dstW; ++dx) {
             int mx = mirror ? (dstW - 1 - dx) : dx;
             int ry = (rotation == 90) ? (dstW - 1 - mx) : mx;
-            int sy = offsetY + (ry * croppedSrcH) / rh;
+            int sy = offsetY + static_cast<int>((static_cast<int64_t>(ry) * croppedSrcH) / rh);
             if (sy < 0) sy = 0;
             else if (sy >= srcH) sy = srcH - 1;
             lutForDestX[dx] = sy;
         }
         for (int dy = 0; dy < dstH; ++dy) {
             int rx = (rotation == 270) ? (dstH - 1 - dy) : dy;
-            int sx = offsetX + (rx * croppedSrcW) / rw;
+            int sx = offsetX + static_cast<int>((static_cast<int64_t>(rx) * croppedSrcW) / rw);
             if (sx < 0) sx = 0;
             else if (sx >= srcW) sx = srcW - 1;
             lutForDestY[dy] = sx;
@@ -512,6 +547,9 @@ struct CoordinateLutCache {
     int srcH = 0;
     int rotation = -1;
     bool mirror = false;
+    float zoom = 1.0f;
+    float panX = 0.0f;
+    float panY = 0.0f;
     bool swappedAxes = false;
     std::vector<int> lutX;
     std::vector<int> lutY;
@@ -522,18 +560,25 @@ static thread_local CoordinateLutCache tl_lutCache;
 inline const CoordinateLutCache& getCoordinateLuts(
     int dstW, int dstH,
     int srcW, int srcH,
-    int rotation, bool mirror
+    int rotation, bool mirror,
+    float zoom, float panX, float panY
 ) {
     if (tl_lutCache.dstW != dstW || tl_lutCache.dstH != dstH ||
         tl_lutCache.srcW != srcW || tl_lutCache.srcH != srcH ||
-        tl_lutCache.rotation != rotation || tl_lutCache.mirror != mirror) {
+        tl_lutCache.rotation != rotation || tl_lutCache.mirror != mirror ||
+        std::abs(tl_lutCache.zoom - zoom) > 0.001f ||
+        std::abs(tl_lutCache.panX - panX) > 0.001f ||
+        std::abs(tl_lutCache.panY - panY) > 0.001f) {
         tl_lutCache.dstW = dstW;
         tl_lutCache.dstH = dstH;
         tl_lutCache.srcW = srcW;
         tl_lutCache.srcH = srcH;
         tl_lutCache.rotation = rotation;
         tl_lutCache.mirror = mirror;
-        buildCoordinateLuts(dstW, dstH, srcW, srcH, rotation, mirror,
+        tl_lutCache.zoom = zoom;
+        tl_lutCache.panX = panX;
+        tl_lutCache.panY = panY;
+        buildCoordinateLuts(dstW, dstH, srcW, srcH, rotation, mirror, zoom, panX, panY,
                             tl_lutCache.swappedAxes, tl_lutCache.lutX, tl_lutCache.lutY);
     }
     return tl_lutCache;
@@ -935,6 +980,9 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativePushYuvToYuyvFrame(
     jint uvPixelStride,
     jint rotation,
     jboolean mirror,
+    jfloat zoom,
+    jfloat panX,
+    jfloat panY,
     jint maxInFlight
 ) {
     UvcContext* ctx = nullptr;
@@ -968,7 +1016,7 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativePushYuvToYuyvFrame(
     }
 
     auto* __restrict dst = static_cast<uint8_t*>(ctx->buffers[idx].start);
-    const bool isIdentity = (rotation == 0 && !mirror && srcW == dstW && srcH == dstH);
+    const bool isIdentity = (rotation == 0 && !mirror && srcW == dstW && srcH == dstH && zoom <= 1.001f && panX == 0.0f && panY == 0.0f);
 
     if (isIdentity) {
         for (int y = 0; y < dstH; ++y) {
@@ -1012,7 +1060,7 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativePushYuvToYuyvFrame(
             }
         }
     } else {
-        const auto& cache = getCoordinateLuts(dstW, dstH, srcW, srcH, rotation, mirror == JNI_TRUE);
+        const auto& cache = getCoordinateLuts(dstW, dstH, srcW, srcH, rotation, mirror == JNI_TRUE, zoom, panX, panY);
         const bool swappedAxes = cache.swappedAxes;
         const int* __restrict lutX = cache.lutX.data();
         const int* __restrict lutY = cache.lutY.data();
@@ -1083,6 +1131,9 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeYuv420ToNv21(
     jint dstH,
     jint rotation,
     jboolean mirror,
+    jfloat zoom,
+    jfloat panX,
+    jfloat panY,
     jbyteArray outNv21
 ) {
     const auto* yPlane = static_cast<const uint8_t*>(env->GetDirectBufferAddress(yBuf));
@@ -1096,7 +1147,7 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeYuv420ToNv21(
     uint8_t* __restrict dstY = nv21;
     uint8_t* __restrict dstVU = nv21 + (dstW * dstH);
 
-    const bool isIdentity = (rotation == 0 && !mirror && srcW == dstW && srcH == dstH);
+    const bool isIdentity = (rotation == 0 && !mirror && srcW == dstW && srcH == dstH && zoom <= 1.001f && panX == 0.0f && panY == 0.0f);
 
     if (isIdentity) {
         if (yRowStride == dstW) {
@@ -1153,7 +1204,7 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeYuv420ToNv21(
         }
     } else {
         // Fast 1D LUT-driven path for rotation (0/90/180/270), mirror, and aspect-preserving crop/scale
-        const auto& cache = getCoordinateLuts(dstW, dstH, srcW, srcH, rotation, mirror == JNI_TRUE);
+        const auto& cache = getCoordinateLuts(dstW, dstH, srcW, srcH, rotation, mirror == JNI_TRUE, zoom, panX, panY);
         const bool swappedAxes = cache.swappedAxes;
         const int* __restrict lutX = cache.lutX.data();
         const int* __restrict lutY = cache.lutY.data();

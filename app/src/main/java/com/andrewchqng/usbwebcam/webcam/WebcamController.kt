@@ -355,17 +355,11 @@ class WebcamController private constructor(private val application: Application)
         val norm = ((degrees % 360) + 360) % 360
         if (_state.value.rotationDegrees == norm) return
         _state.update { it.copy(rotationDegrees = norm) }
-        if (_state.value.zoomRatio > 1.0f) {
-            updateRepeatingRequestOnFly()
-        }
     }
 
     fun setMirrorHorizontal(mirror: Boolean) {
         if (_state.value.mirrorHorizontal == mirror) return
         _state.update { it.copy(mirrorHorizontal = mirror) }
-        if (_state.value.zoomRatio > 1.0f) {
-            updateRepeatingRequestOnFly()
-        }
     }
 
     fun setJpegQuality(quality: Int) {
@@ -422,27 +416,23 @@ class WebcamController private constructor(private val application: Application)
         val maxZ = _state.value.maxZoom.coerceAtLeast(1.0f)
         val clamped = zoom.coerceIn(1.0f, maxZ)
         _state.update { it.copy(zoomRatio = clamped) }
-        updateRepeatingRequestOnFly()
     }
 
     fun setPanX(x: Float) {
         val clamped = x.coerceIn(-1.0f, 1.0f)
         if (abs(_state.value.panX - clamped) < 0.005f) return
         _state.update { it.copy(panX = clamped) }
-        updateRepeatingRequestOnFly()
     }
 
     fun setPanY(y: Float) {
         val clamped = y.coerceIn(-1.0f, 1.0f)
         if (abs(_state.value.panY - clamped) < 0.005f) return
         _state.update { it.copy(panY = clamped) }
-        updateRepeatingRequestOnFly()
     }
 
     fun resetPan() {
         if (_state.value.panX == 0f && _state.value.panY == 0f) return
         _state.update { it.copy(panX = 0f, panY = 0f) }
-        updateRepeatingRequestOnFly()
     }
 
     fun setExposureEv(ev: Float) {
@@ -537,8 +527,10 @@ class WebcamController private constructor(private val application: Application)
             val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             val sizes = map?.getOutputSizes(ImageFormat.YUV_420_888) ?: return Size(targetW, targetH)
 
-            // Exact match first (enables zero-scale NEON/memcpy fast path)
-            sizes.firstOrNull { it.width == targetW && it.height == targetH }?.let { return it }
+            // Prefer 1920x1080 capture when output is <= 1080p to provide high-detail headroom for digital PTZ
+            if (targetW <= 1920 && targetH <= 1080) {
+                sizes.firstOrNull { it.width == 1920 && it.height == 1080 }?.let { return it }
+            }
 
             // Otherwise closest matching resolution >= target size
             sizes.filter { it.width >= targetW && it.height >= targetH }
@@ -678,7 +670,7 @@ class WebcamController private constructor(private val application: Application)
             builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
         }
 
-        // Exposure compensation (EV) & Zoom
+        // Exposure compensation (EV)
         runCatching {
             val chars = cameraManager.getCameraCharacteristics(camId)
             val evRange = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
@@ -688,58 +680,13 @@ class WebcamController private constructor(private val application: Application)
                 builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, index)
             }
 
+            // Keep hardware Camera2 capture unzoomed & full-FOV so the entire scene is available for PTZ pan/tilt
             val activeRect = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
-            if (activeRect != null && activeRect.width() > 0 && activeRect.height() > 0) {
-                val activeW = activeRect.width()
-                val activeH = activeRect.height()
-
-                val targetW = s.negotiatedWidth.coerceAtLeast(1)
-                val targetH = s.negotiatedHeight.coerceAtLeast(1)
-                val targetAspect = targetW.toDouble() / targetH.toDouble()
-                val sensorAspect = activeW.toDouble() / activeH.toDouble()
-
-                val baseW: Double
-                val baseH: Double
-                if (targetAspect > sensorAspect) {
-                    baseW = activeW.toDouble()
-                    baseH = (activeW / targetAspect).coerceIn(1.0, activeH.toDouble())
-                } else {
-                    baseH = activeH.toDouble()
-                    baseW = (activeH * targetAspect).coerceIn(1.0, activeW.toDouble())
-                }
-
-                val zoom = s.zoomRatio.coerceIn(1.0f, s.maxZoom.coerceAtLeast(1.0f)).toDouble()
-                val cropW = (baseW / zoom).roundToInt().coerceIn(1, activeW)
-                val cropH = (baseH / zoom).roundToInt().coerceIn(1, activeH)
-
-                val maxPanX = (activeW - cropW).coerceAtLeast(0)
-                val maxPanY = (activeH - cropH).coerceAtLeast(0)
-
-                // Map user pan/tilt (accounting for mirroring & rotation) to physical sensor coordinates
-                val userX = if (s.mirrorHorizontal) -s.panX else s.panX
-                val userY = s.panY
-
-                val (sensorPanX, sensorPanY) = when (s.rotationDegrees) {
-                    90 -> Pair(userY, -userX)
-                    180 -> Pair(-userX, -userY)
-                    270 -> Pair(-userY, userX)
-                    else -> Pair(userX, userY)
-                }
-
-                val normX = ((sensorPanX.coerceIn(-1.0f, 1.0f) + 1.0) / 2.0).coerceIn(0.0, 1.0)
-                val normY = ((sensorPanY.coerceIn(-1.0f, 1.0f) + 1.0) / 2.0).coerceIn(0.0, 1.0)
-
-                val cropLeft = (activeRect.left + normX * maxPanX).roundToInt().coerceIn(activeRect.left, activeRect.right - cropW)
-                val cropTop = (activeRect.top + normY * maxPanY).roundToInt().coerceIn(activeRect.top, activeRect.bottom - cropH)
-                val cropRight = (cropLeft + cropW).coerceAtMost(activeRect.right)
-                val cropBottom = (cropTop + cropH).coerceAtMost(activeRect.bottom)
-
-                builder.set(CaptureRequest.SCALER_CROP_REGION, Rect(cropLeft, cropTop, cropRight, cropBottom))
-
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    // Set zoom ratio to 1.0f so HAL respects SCALER_CROP_REGION without enforcing centered zoom
-                    builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, 1.0f)
-                }
+            if (activeRect != null) {
+                builder.set(CaptureRequest.SCALER_CROP_REGION, activeRect)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, 1.0f)
             }
         }
     }
@@ -869,6 +816,9 @@ class WebcamController private constructor(private val application: Application)
                 dstH,
                 totalRotation,
                 mirror,
+                currentState.zoomRatio,
+                currentState.panX,
+                currentState.panY,
                 nv21Buffer
             )
 
@@ -891,6 +841,9 @@ class WebcamController private constructor(private val application: Application)
                 uvPixelStride,
                 totalRotation,
                 mirror,
+                currentState.zoomRatio,
+                currentState.panX,
+                currentState.panY,
                 maxInFlight
             )
         }
