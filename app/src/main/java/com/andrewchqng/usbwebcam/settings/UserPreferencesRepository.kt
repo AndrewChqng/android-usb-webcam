@@ -78,12 +78,12 @@ sealed class AppPreference(val preference: PreferenceKey<*>) {
     data object BoostUsbIrqPriority : BooleanPreferenceKey("boost_usb_irq_priority", true)
 
     data object UvcExposedFormatsPref : ObjectPreferenceKey<UvcExposedFormatsOption>(
-        "uvc_exposed_formats_v3", UvcExposedFormatsOption.MjpegOnly,
+        "uvc_exposed_formats_v4", UvcExposedFormatsOption.Both,
         fromStringPreference = {
             when (it) {
-                UvcExposedFormatsOption.Both.key -> UvcExposedFormatsOption.Both
+                UvcExposedFormatsOption.MjpegOnly.key -> UvcExposedFormatsOption.MjpegOnly
                 UvcExposedFormatsOption.YuyvOnly.key -> UvcExposedFormatsOption.YuyvOnly
-                else -> UvcExposedFormatsOption.MjpegOnly
+                else -> UvcExposedFormatsOption.Both
             }
         },
         toStringPreference = { it.key }
@@ -164,7 +164,7 @@ data class UserPreferences(
     val uvcMaxPacketOption: UvcMaxPacketOption,
     val uvcMaxBurstOption: UvcMaxBurstOption,
     val boostUsbIrqPriority: Boolean,
-    val uvcExposedFormatsOption: UvcExposedFormatsOption = UvcExposedFormatsOption.MjpegOnly,
+    val uvcExposedFormatsOption: UvcExposedFormatsOption = UvcExposedFormatsOption.Both,
     val customUsbProductName: String = "",
     val customUsbManufacturerName: String = "",
     val jpegQuality: Int = 82,

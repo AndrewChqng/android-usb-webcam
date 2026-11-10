@@ -313,7 +313,7 @@ fun MainPage(
 
                 if (webcamState.isHostStreaming && webcamState.negotiatedFormat.equals("YUYV", ignoreCase = true)) {
                     Text(
-                        text = "Notice: Host negotiated raw uncompressed YUYV. The MJPEG slider only controls MJPEG compression. In Settings, keep 'Exposed UVC Formats' on 'MJPEG Only' to stream MJPEG.",
+                        text = "Active: Raw uncompressed YUYV (Kamoso/PipeWire). MJPEG quality slider applies to MJPEG streams (OBS, Windows Camera, Chrome, Meet).",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary
                     )
