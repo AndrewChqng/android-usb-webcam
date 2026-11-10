@@ -100,6 +100,9 @@ class CharacterDeviceManager private constructor(private val application: Applic
 
             if (exists) {
                 fixCharacterDevicePermissions(finalNode)
+                if (gadgetUserPreferences.boostUsbIrqPriority) {
+                    applyUsbIrqOptimizations()
+                }
                 finalNode
             } else {
                 Timber.e("UVC V4L2 node $finalNode does not exist after gadget creation")
@@ -278,9 +281,12 @@ class CharacterDeviceManager private constructor(private val application: Applic
             fi
 
             if [ "$boostIrq" = "1" ]; then
-                for p in ${'$'}(ps -A -o pid,comm | grep "irq/.*dwc3" | awk '{print ${'$'}1}'); do
-                    chrt -f -p "${'$'}p" 50 2>/dev/null || true
+                for p in ${'$'}(ps -A -o pid,comm | grep -E "irq/.*(dwc3|udc|usb)" | awk '{print ${'$'}1}'); do
+                    chrt -f -p "${'$'}p" 90 2>/dev/null || chrt -f -p 90 "${'$'}p" 2>/dev/null || true
                     renice -n -20 -p "${'$'}p" 2>/dev/null || true
+                done
+                for irq in ${'$'}(awk '/dwc3|udc/ {gsub(":", "", ${'$'}1); print ${'$'}1}' /proc/interrupts 2>/dev/null); do
+                    echo 2-3 > "/proc/irq/${'$'}irq/smp_affinity_list" 2>/dev/null || echo 2-5 > "/proc/irq/${'$'}irq/smp_affinity_list" 2>/dev/null || true
                 done
             fi
         """.trimIndent()
@@ -288,6 +294,30 @@ class CharacterDeviceManager private constructor(private val application: Applic
         val res = Shell.cmd(script).exec()
         if (!res.isSuccess) {
             Timber.w("createUvcGadgetViaRootShell warning: out=${res.out} err=${res.err}")
+        }
+    }
+
+    /**
+     * Elevates DWC3/UDC threaded IRQ priority to SCHED_FIFO 90 and pins IRQ affinity to
+     * performance cores (CPU 2-3). Qualcomm's dwc3-msm driver spawns a new [irq/<N>-dwc3]
+     * thread asynchronously after UDC bind or USB bus reset with SCHED_OTHER on LITTLE cores
+     * (CPU 0-1), which causes missed ISOC microframes (-EXDEV) and UVC_QUEUE_DROP_INCOMPLETE
+     * truncated frames unless re-boosted once USB link enumeration completes.
+     */
+    fun applyUsbIrqOptimizations() {
+        val cmd = """
+            for p in ${'$'}(ps -A -o pid,comm | grep -E "irq/.*(dwc3|udc|usb)" | awk '{print ${'$'}1}'); do
+                chrt -f -p "${'$'}p" 90 2>/dev/null || chrt -f -p 90 "${'$'}p" 2>/dev/null || true
+                renice -n -20 -p "${'$'}p" 2>/dev/null || true
+            done
+            for irq in ${'$'}(awk '/dwc3|udc/ {gsub(":", "", ${'$'}1); print ${'$'}1}' /proc/interrupts 2>/dev/null); do
+                echo 2-3 > "/proc/irq/${'$'}irq/smp_affinity_list" 2>/dev/null || echo 2-5 > "/proc/irq/${'$'}irq/smp_affinity_list" 2>/dev/null || true
+            done
+        """.trimIndent()
+        runCatching {
+            Shell.cmd(cmd).exec()
+        }.onFailure {
+            Timber.w(it, "Failed to apply USB IRQ scheduling optimizations")
         }
     }
 

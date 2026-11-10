@@ -34,7 +34,7 @@ class WebcamForegroundService : Service() {
             }
             ACTION_START -> {
                 val videoDevicePath = intent.getStringExtra(EXTRA_VIDEO_PATH) ?: "/dev/video2"
-                val maxPayload = intent.getIntExtra(EXTRA_MAX_PAYLOAD, 1024)
+                val maxPayload = intent.getIntExtra(EXTRA_MAX_PAYLOAD, 3072)
                 startForegroundWithNotification(videoDevicePath)
                 acquireWakeLock()
                 WebcamController.getInstance(application).startUvcSession(videoDevicePath, maxPayload)
@@ -122,7 +122,7 @@ class WebcamForegroundService : Service() {
         const val EXTRA_VIDEO_PATH = "extra_video_path"
         const val EXTRA_MAX_PAYLOAD = "extra_max_payload"
 
-        fun start(context: Context, videoPath: String, maxPayloadSize: Int = 1024) {
+        fun start(context: Context, videoPath: String, maxPayloadSize: Int = 3072) {
             val intent = Intent(context, WebcamForegroundService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_VIDEO_PATH, videoPath)

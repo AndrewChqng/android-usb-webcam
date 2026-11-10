@@ -21,9 +21,11 @@ Forked and repurposed from the ConfigFS and `libsu` foundation of [`Arian04/andr
   - **OS & Kernel**: OxygenOS 14 (Android 14), GKI Kernel `6.1.68-android14-11`
   - **Root Manager**: KernelSU (`ksud`)
   - **Verified Streaming Modes (into Linux x86_64 host via `uvcvideo` / V4L2 / PipeWire with simultaneous ADB active)**:
-    - `1920×1080` MJPEG @ 30 fps (~41 KB/frame)
-    - `1280×720` MJPEG @ 30 fps (~16.6 KB/frame)
-    - `640×480` Uncompressed YUYV @ ~24 fps (614,400 B/frame)
+    - `1920×1080` MJPEG @ 30 fps (~120–250 KB/frame)
+    - `1280×720` MJPEG @ 30 fps (~35 KB/frame)
+    - `640×360` MJPEG @ 30 fps (~8.5 KB/frame)
+    - `640×480` Uncompressed YUYV @ 30 fps (614,400 B/frame)
+    - `640×360` Uncompressed YUYV @ 30 fps (460,800 B/frame)
 
 ### 🔮 Likely Compatible Devices
 Any rooted Android 8.0+ (API 26+) device whose kernel has **`CONFIG_USB_CONFIGFS=y`** and **`CONFIG_USB_CONFIGFS_F_UVC=y`** enabled:
@@ -79,7 +81,8 @@ Any rooted Android 8.0+ (API 26+) device whose kernel has **`CONFIG_USB_CONFIGFS
   - **Target FPS Cap** (`Auto`, `60`, `30`, `15 FPS`) and **V4L2 Ring Queue Mode** (`1 buf Ultra-Low Latency`, `2 bufs Tear-Free Balanced`, `3 bufs Max Smoothness`).
   - **Camera2 ISP Controls**: Continuous Autofocus vs. Infinity Focus Lock, Constant Framerate AE Priority, Video Stabilization (EIS) toggle, Digital Zoom (`1.0x–4.0x`), and Exposure Compensation (`-2.0 to +2.0 EV`).
   - On-the-fly orientation adjustment (`0°`, `90°`, `180°`, `270°`), horizontal mirroring, MJPEG quality slider (`50%–95%`), and live telemetry (`Actual FPS`, `ms/frame`, `KB/frame`, `USB packet size`).
-  - **Real-Time USB Controller IRQ Boost**: Automatically elevates `irq/*-dwc3` kernel threads to `SCHED_FIFO` priority 50 (`-20` nice) to prevent OEM schedulers from starving USB isochronous TRB rings.
+  - **Real-Time USB Controller IRQ Boost & Affinity Pinning**: Automatically elevates `irq/*-dwc3` kernel threads to `SCHED_FIFO` priority 90 (`-20` nice) and pins IRQ affinity to performance cores (`CPU 2-3`), preventing OEM vendor schedulers from starving USB isochronous TRBs and eliminating dropped microframe errors (`-EXDEV`).
+  - **High-Bandwidth Isochronous USB Streaming**: Defaults to 3072 bytes/microframe (3×1024 high-bandwidth ISOC, ~24.6 MB/s), unlocking full 30 fps uncompressed YUYV and high-bitrate MJPEG over USB 2.0 High-Speed.
 
 ---
 

@@ -479,6 +479,40 @@ void buildCoordinateLuts(
     }
 }
 
+struct CoordinateLutCache {
+    int dstW = 0;
+    int dstH = 0;
+    int srcW = 0;
+    int srcH = 0;
+    int rotation = -1;
+    bool mirror = false;
+    bool swappedAxes = false;
+    std::vector<int> lutX;
+    std::vector<int> lutY;
+};
+
+static thread_local CoordinateLutCache tl_lutCache;
+
+inline const CoordinateLutCache& getCoordinateLuts(
+    int dstW, int dstH,
+    int srcW, int srcH,
+    int rotation, bool mirror
+) {
+    if (tl_lutCache.dstW != dstW || tl_lutCache.dstH != dstH ||
+        tl_lutCache.srcW != srcW || tl_lutCache.srcH != srcH ||
+        tl_lutCache.rotation != rotation || tl_lutCache.mirror != mirror) {
+        tl_lutCache.dstW = dstW;
+        tl_lutCache.dstH = dstH;
+        tl_lutCache.srcW = srcW;
+        tl_lutCache.srcH = srcH;
+        tl_lutCache.rotation = rotation;
+        tl_lutCache.mirror = mirror;
+        buildCoordinateLuts(dstW, dstH, srcW, srcH, rotation, mirror,
+                            tl_lutCache.swappedAxes, tl_lutCache.lutX, tl_lutCache.lutY);
+    }
+    return tl_lutCache;
+}
+
 void drainCompletedBuffersLocked(UvcContext* ctx) {
     while (true) {
         struct v4l2_buffer dq {};
@@ -929,9 +963,10 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativePushYuvToYuyvFrame(
             }
         }
     } else {
-        bool swappedAxes = false;
-        std::vector<int> lutX, lutY;
-        buildCoordinateLuts(dstW, dstH, srcW, srcH, rotation, mirror == JNI_TRUE, swappedAxes, lutX, lutY);
+        const auto& cache = getCoordinateLuts(dstW, dstH, srcW, srcH, rotation, mirror == JNI_TRUE);
+        const bool swappedAxes = cache.swappedAxes;
+        const int* __restrict lutX = cache.lutX.data();
+        const int* __restrict lutY = cache.lutY.data();
 
         if (!swappedAxes) {
             for (int y = 0; y < dstH; ++y) {
@@ -1069,9 +1104,10 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeYuv420ToNv21(
         }
     } else {
         // Fast 1D LUT-driven path for rotation (0/90/180/270), mirror, and aspect-preserving crop/scale
-        bool swappedAxes = false;
-        std::vector<int> lutX, lutY;
-        buildCoordinateLuts(dstW, dstH, srcW, srcH, rotation, mirror == JNI_TRUE, swappedAxes, lutX, lutY);
+        const auto& cache = getCoordinateLuts(dstW, dstH, srcW, srcH, rotation, mirror == JNI_TRUE);
+        const bool swappedAxes = cache.swappedAxes;
+        const int* __restrict lutX = cache.lutX.data();
+        const int* __restrict lutY = cache.lutY.data();
 
         if (!swappedAxes) {
             for (int y = 0; y < dstH; ++y) {

@@ -19,6 +19,8 @@ import android.os.Process
 import android.util.Range
 import android.util.Size
 import android.view.Surface
+import com.andrewchqng.usbwebcam.hid_utils.CharacterDeviceManager
+import com.andrewchqng.usbwebcam.settings.UserPreferencesRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -56,7 +58,7 @@ data class WebcamStreamState(
     val measuredFps: Float = 0f,
     val avgEncodeTimeMs: Float = 0f,
     val avgFrameSizeKb: Float = 0f,
-    val boundMaxPacket: Int = 1024,
+    val boundMaxPacket: Int = 3072,
     val selectedCameraId: String = "0",
     val availableCameras: List<CameraLensInfo> = emptyList(),
     val rotationDegrees: Int = 0,
@@ -180,7 +182,7 @@ class WebcamController private constructor(private val application: Application)
         }
     }
 
-    fun startUvcSession(videoDevicePath: String, maxPayloadSize: Int = 1024): Boolean {
+    fun startUvcSession(videoDevicePath: String, maxPayloadSize: Int = 3072): Boolean {
         stopUvcSession()
 
         val fdOrErr = UvcNative.nativeOpen(videoDevicePath, maxPayloadSize)
@@ -255,11 +257,15 @@ class WebcamController private constructor(private val application: Application)
     override fun onHostConnectionChanged(isConnected: Boolean) {
         Timber.i("UVC host connection changed: $isConnected")
         _state.update { it.copy(isHostConnected = isConnected) }
+        if (isConnected) {
+            triggerUsbIrqBoost()
+        }
     }
 
     override fun onStreamStateChanged(isStreaming: Boolean, isMjpeg: Boolean, width: Int, height: Int, fps: Int) {
         Timber.i("UVC stream state changed: streaming=$isStreaming isMjpeg=$isMjpeg ${width}x${height}@${fps}fps")
         if (isStreaming) {
+            triggerUsbIrqBoost()
             _state.update {
                 it.copy(
                     isHostConnected = true,
@@ -284,6 +290,19 @@ class WebcamController private constructor(private val application: Application)
             }
             if (!_state.value.isPreviewEnabled || previewSurface == null) {
                 stopCameraCapture()
+            }
+        }
+    }
+
+    private fun triggerUsbIrqBoost() {
+        scope.launch {
+            try {
+                val boost = UserPreferencesRepository.getInstance(application).userPreferencesFlow.value.boostUsbIrqPriority
+                if (boost) {
+                    CharacterDeviceManager.getInstance(application).applyUsbIrqOptimizations()
+                }
+            } catch (t: Throwable) {
+                Timber.w(t, "Failed to apply USB IRQ optimizations on stream/connection change")
             }
         }
     }
@@ -624,7 +643,7 @@ class WebcamController private constructor(private val application: Application)
 
         val lens = currentState.availableCameras.firstOrNull { it.cameraId == currentState.selectedCameraId }
         val totalRotation = currentState.rotationDegrees
-        val mirror = currentState.mirrorHorizontal || (lens?.isFrontFacing == true && !currentState.mirrorHorizontal)
+        val mirror = currentState.mirrorHorizontal
 
         val pushed: Boolean
         val payloadBytes: Int
@@ -706,6 +725,11 @@ class WebcamController private constructor(private val application: Application)
 
     @Synchronized
     fun stopCameraCapture() {
+        val threadToQuit = cameraThread
+        val handlerToQuit = cameraHandler
+        cameraThread = null
+        cameraHandler = null
+
         runCatching { captureSession?.close() }
         captureSession = null
 
@@ -715,9 +739,10 @@ class WebcamController private constructor(private val application: Application)
         runCatching { imageReader?.close() }
         imageReader = null
 
-        cameraThread?.quitSafely()
-        cameraThread = null
-        cameraHandler = null
+        handlerToQuit?.post {
+            threadToQuit?.quitSafely()
+        } ?: threadToQuit?.quitSafely()
+
         frameCountWindow = 0
         encodeTimeSumNs = 0L
         frameBytesSum = 0L
