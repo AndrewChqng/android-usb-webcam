@@ -39,6 +39,7 @@ import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -55,6 +56,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import kotlin.math.roundToInt
 import androidx.lifecycle.viewmodel.compose.viewModel
 import cafe.adriel.voyager.core.screen.Screen
 import cafe.adriel.voyager.navigator.LocalNavigator
@@ -445,8 +447,83 @@ fun MainPage(
                 Slider(
                     value = webcamState.zoomRatio,
                     onValueChange = { mainViewModel.setZoomRatio(it) },
-                    valueRange = 1.0f..4.0f
+                    valueRange = 1.0f..webcamState.maxZoom.coerceAtLeast(4.0f)
                 )
+
+                if (webcamState.zoomRatio > 1.05f) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Camera2 PTZ Crop Offset (X / Y)",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            if (webcamState.panX != 0f || webcamState.panY != 0f) {
+                                TextButton(
+                                    onClick = { mainViewModel.resetPan() },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    Text("Recenter", style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
+                        }
+
+                        // X axis (Horizontal Pan)
+                        val panXPercent = (webcamState.panX * 100f).roundToInt()
+                        val xDesc = when {
+                            panXPercent > 0 -> "Right +$panXPercent%"
+                            panXPercent < 0 -> "Left $panXPercent%"
+                            else -> "Center (0%)"
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Crop X (Horizontal Pan)", style = MaterialTheme.typography.bodySmall)
+                            Text(xDesc, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                        }
+                        Slider(
+                            value = webcamState.panX,
+                            onValueChange = { mainViewModel.setPanX(it) },
+                            valueRange = -1.0f..1.0f
+                        )
+
+                        // Y axis (Vertical Tilt)
+                        val panYPercent = (webcamState.panY * 100f).roundToInt()
+                        val yDesc = when {
+                            panYPercent > 0 -> "Down +$panYPercent%"
+                            panYPercent < 0 -> "Up $panYPercent%"
+                            else -> "Center (0%)"
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Crop Y (Vertical Tilt)", style = MaterialTheme.typography.bodySmall)
+                            Text(yDesc, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                        }
+                        Slider(
+                            value = webcamState.panY,
+                            onValueChange = { mainViewModel.setPanY(it) },
+                            valueRange = -1.0f..1.0f
+                        )
+                    }
+                } else {
+                    Text(
+                        "Camera2 X/Y pan & tilt controls activate when zoomed in (> 1.0x).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
 
                 Text(
                     text = String.format(Locale.US, "Exposure Compensation: %+.1f EV", webcamState.exposureEv),

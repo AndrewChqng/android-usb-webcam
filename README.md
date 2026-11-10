@@ -85,7 +85,7 @@ Any rooted Android 8.0+ (API 26+) device whose kernel has **`CONFIG_USB_CONFIGFS
     - **Anti-Flicker / Anti-Banding**: Eliminates room lighting flicker and rolling bars under 50 Hz (UK/EU/Asia) or 60 Hz (US/JP) AC lighting.
     - **Studio ISP Quality Mode**: Toggles high-quality studio noise reduction, edge enhancement, and hot pixel suppression (vs. low-latency fast mode).
     - **LED Video Light**: Use phone rear flash as a desk fill light in dim rooms.
-    - Continuous Autofocus vs. Infinity Focus Lock, Constant Framerate AE Priority, Video Stabilization (EIS) toggle, Digital Zoom (`1.0x–4.0x`), and Exposure Compensation (`-2.0 to +2.0 EV`).
+    - Continuous Autofocus vs. Infinity Focus Lock, Constant Framerate AE Priority, Video Stabilization (EIS) toggle, Digital Zoom with Pan & Tilt (PTZ X/Y crop controls when zoomed in), and Exposure Compensation (`-2.0 to +2.0 EV`).
     - Quick "Reset Camera & ISP Controls" button to instantly restore all camera parameters to default.
   - **Live Performance & USB Bus Telemetry**: Real-time FPS, frame compression time (ms/frame), frame size (KB), video bit rate (Mbps), and actual USB High-Speed bus utilization percentage.
   - **Custom USB Gadget Configuration**:
