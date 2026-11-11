@@ -440,8 +440,10 @@ class UserPreferencesRepository private constructor(application: Application) {
     }
 
     fun addCustomResolution(width: Int, height: Int): Boolean {
-        if (width <= 0 || height <= 0 || width > 7680 || height > 7680) return false
-        val key = "${width}x${height}"
+        if (width < 16 || height < 16 || width > 7680 || height > 7680) return false
+        val w = if (width % 2 != 0) width - 1 else width
+        val h = if (height % 2 != 0) height - 1 else height
+        val key = "${w}x${h}"
         val custom = getPreference(AppPreference.CustomResolutionsPref).toMutableSet()
         custom.add(key)
         setPreference(AppPreference.CustomResolutionsPref, custom)

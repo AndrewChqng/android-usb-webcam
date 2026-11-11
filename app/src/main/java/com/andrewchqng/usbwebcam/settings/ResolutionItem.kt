@@ -39,12 +39,18 @@ data class ResolutionItem(
             width == 2560 && height == 1440 -> "2K QHD"
             width == 1920 && height == 1080 -> "1080p FHD"
             width == 1280 && height == 720 -> "720p HD"
-            width == 640 && height == 480 -> "480p SD"
-            width == 640 && height == 360 -> "360p"
+            width == 640 && height == 480 -> "480p SD (VGA)"
+            width == 640 && height == 360 -> "360p nHD"
+            width == 352 && height == 288 -> "288p CIF"
+            width == 320 && height == 240 -> "240p QVGA"
+            width == 176 && height == 144 -> "144p QCIF"
             width == 2160 && height == 3840 -> "4K Portrait"
             width == 1440 && height == 2560 -> "2K Portrait"
             width == 1080 && height == 1920 -> "1080p Portrait"
             width == 720 && height == 1280 -> "720p Portrait"
+            width == 360 && height == 640 -> "360p Portrait"
+            width == 240 && height == 320 -> "240p Portrait"
+            width == 144 && height == 176 -> "144p Portrait"
             width == 1600 && height == 1200 -> "1200p (4:3)"
             width == 1280 && height == 960 -> "960p (4:3)"
             width == 1080 && height == 1080 -> "1080p Square"
@@ -69,7 +75,8 @@ data class ResolutionItem(
             if (parts.size != 2) return null
             val w = parts[0].toIntOrNull() ?: return null
             val h = parts[1].toIntOrNull() ?: return null
-            if (w <= 0 || h <= 0) return null
+            // Technical limits: minimum 16x16 (JPEG DCT macroblock boundary), max 7680x7680 (8K)
+            if (w < 16 || h < 16 || w > 7680 || h > 7680) return null
             return ResolutionItem(w, h, isCustom)
         }
 
@@ -82,11 +89,17 @@ data class ResolutionItem(
             ResolutionItem(1280, 720),
             ResolutionItem(640, 480),
             ResolutionItem(640, 360),
+            ResolutionItem(352, 288),
+            ResolutionItem(320, 240),
+            ResolutionItem(176, 144),
             // Standard vertical companion resolutions (for mobile/OBS streaming)
             ResolutionItem(1080, 1920),
             ResolutionItem(720, 1280),
             ResolutionItem(1440, 2560),
-            ResolutionItem(2160, 3840)
+            ResolutionItem(2160, 3840),
+            ResolutionItem(360, 640),
+            ResolutionItem(240, 320),
+            ResolutionItem(144, 176)
         )
 
         fun discoverSensorResolutions(cameraManager: CameraManager): List<ResolutionItem> {
@@ -99,10 +112,13 @@ data class ResolutionItem(
                     val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
                     val yuvSizes = map?.getOutputSizes(ImageFormat.YUV_420_888) ?: continue
                     for (s in yuvSizes) {
-                        if (s.width >= 320 && s.height >= 240) {
+                        // Do not hide resolutions considered too small unless for technical reasons:
+                        // 1. width >= 16 and height >= 16 (minimum DCT macroblock / block size for JPEG and YUV encoders)
+                        // 2. width and height are even (required for YUV 4:2:0 and YUYV 4:2:2 chroma subsampling)
+                        if (s.width >= 16 && s.height >= 16 && s.width % 2 == 0 && s.height % 2 == 0) {
                             found.add(ResolutionItem(s.width, s.height))
-                            // If 16:9 landscape, also offer matching 9:16 portrait
-                            if (s.width * 9 == s.height * 16 && s.width <= 3840) {
+                            // If landscape, also offer matching portrait companion
+                            if (s.width > s.height && s.width <= 3840) {
                                 found.add(ResolutionItem(s.height, s.width))
                             }
                         }

@@ -541,21 +541,22 @@ class WebcamController private constructor(private val application: Application)
             // Direct match first (either direct orientation or rotated)
             sizes.firstOrNull { (it.width == targetW && it.height == targetH) || (it.width == reqW && it.height == reqH) }?.let { return it }
 
-            // Match 4K UHD or 1440p QHD if requested, otherwise prefer 1080p for PTZ headroom
+            // Match 4K UHD or 1440p QHD if requested
             if (reqW >= 3840 && reqH >= 2160) {
                 sizes.firstOrNull { it.width == 3840 && it.height == 2160 }?.let { return it }
             } else if (reqW >= 2560 && reqH >= 1440) {
                 sizes.firstOrNull { it.width == 2560 && it.height == 1440 }?.let { return it }
                     ?: sizes.firstOrNull { it.width == 3840 && it.height == 2160 }?.let { return it }
-            } else if (reqW <= 1920 && reqH <= 1080) {
-                sizes.firstOrNull { it.width == 1920 && it.height == 1080 }?.let { return it }
             }
 
-            // Otherwise closest matching resolution >= requested size
-            sizes.filter { it.width >= reqW && it.height >= reqH }
-                .minByOrNull { (it.width - reqW) + (it.height - reqH) }
-                ?: sizes.minByOrNull { abs(it.width - reqW) + abs(it.height - reqH) }
-                ?: Size(targetW, targetH)
+            // Smallest sensor resolution >= requested size to maximize efficiency and avoid unnecessary downscaling
+            val candidates = sizes.filter { it.width >= reqW && it.height >= reqH }
+            if (candidates.isNotEmpty()) {
+                return candidates.minByOrNull { it.width.toLong() * it.height } ?: candidates.first()
+            }
+
+            // Otherwise closest matching resolution
+            sizes.minByOrNull { abs(it.width - reqW) + abs(it.height - reqH) } ?: Size(targetW, targetH)
         }.getOrDefault(Size(targetW, targetH))
     }
 

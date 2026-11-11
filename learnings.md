@@ -57,7 +57,20 @@
 
 ---
 
-## 4. Double-Buffering & Zero-Tear Synchronization
+## 4. Resolution Boundaries & Efficiency Policies
+
+### Technical vs Arbitrary Resolution Limits
+- Resolutions must **never** be hidden or dropped simply for being small. Standard low resolutions (e.g. 176×144 QCIF, 320×240 QVGA, 352×288 CIF) are fully valid and supported.
+- **Valid Technical Limits**:
+  1. **Minimum Dimension ($\ge 16 \times 16$)**: Required by JPEG DCT macroblocks ($8\times8$ or $16\times16$) and hardware video encoders.
+  2. **Even Dimension Parity ($w \% 2 == 0, h \% 2 == 0$)**: Required by YUV 4:2:0 planar chroma subsampling and YUYV 4:2:2 packed pixel pairs.
+  3. **Maximum Dimension ($\le 7680 \times 7680$)**: 8K boundary within 16-bit uint descriptors (`wWidth`, `wHeight`).
+
+### Sensor Capture Matching for Power & Throughput
+- In `WebcamController.chooseOptimalSize()`, low-resolution requests (e.g. 320×240 or 640×360) do not artificially force a 1080p sensor stream.
+- Instead, the controller matches the smallest native sensor resolution that covers the requested dimensions. This eliminates unnecessary CPU downscaling, reduces ISP memory bandwidth, and optimizes device battery life.
+
+## 5. Double-Buffering & Zero-Tear Synchronization
 
 - Queuing multiple V4L2 buffers simultaneously can cause tearing if camera frame production outpaces host consumption.
 - Setting `maxInFlightBuffers = 1` and checking `UvcNative.nativeCanAcceptFrame(1)` before camera YUV encoding ensures that V4L2 kernel buffers are drained and only a single buffer is in-flight in the USB FIFO, completely preventing tearing and buffer bloat.
