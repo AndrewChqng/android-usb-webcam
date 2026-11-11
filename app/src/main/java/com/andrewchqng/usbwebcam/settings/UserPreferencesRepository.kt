@@ -95,6 +95,32 @@ sealed class AppPreference(val preference: PreferenceKey<*>) {
         toStringPreference = { it.key }
     )
 
+    data object SelectedResolutionsPref : ObjectPreferenceKey<Set<String>>(
+        "selected_resolutions_v1",
+        setOf("1920x1080", "1280x720", "640x480", "640x360"),
+        fromStringPreference = { str ->
+            if (str.isBlank()) setOf("1920x1080", "1280x720", "640x480", "640x360")
+            else str.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        },
+        toStringPreference = { it.joinToString(",") }
+    )
+
+    data object DefaultResolutionPref : ObjectPreferenceKey<String>(
+        "default_resolution_v1", "1920x1080",
+        fromStringPreference = { it },
+        toStringPreference = { it }
+    )
+
+    data object CustomResolutionsPref : ObjectPreferenceKey<Set<String>>(
+        "custom_resolutions_v1",
+        emptySet(),
+        fromStringPreference = { str ->
+            if (str.isBlank()) emptySet()
+            else str.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        },
+        toStringPreference = { it.joinToString(",") }
+    )
+
     data object CustomUsbProductNamePref : ObjectPreferenceKey<String>(
         "custom_usb_product_name", "",
         fromStringPreference = { it },
@@ -131,13 +157,15 @@ sealed class UvcResolutionProfileOption(key: String, @StringRes id: Int, val pro
     data object Max1440p : UvcResolutionProfileOption("max_1440p", R.string.uvc_res_max_1440p, 1)
     data object Max4K : UvcResolutionProfileOption("max_4k", R.string.uvc_res_max_4k, 2)
     data object Max720p : UvcResolutionProfileOption("max_720p", R.string.uvc_res_max_720p, 3)
+    data object Portrait916 : UvcResolutionProfileOption("portrait_9_16", R.string.uvc_res_portrait_9_16, 7)
     data object Only1080p : UvcResolutionProfileOption("only_1080p", R.string.uvc_res_only_1080p, 4)
     data object Only720p : UvcResolutionProfileOption("only_720p", R.string.uvc_res_only_720p, 5)
     data object Only4K : UvcResolutionProfileOption("only_4k", R.string.uvc_res_only_4k, 6)
+    data object Custom : UvcResolutionProfileOption("custom", R.string.uvc_res_custom, 8)
 
     companion object {
         val values: List<UvcResolutionProfileOption>
-            get() = listOf(Max1080p, Max1440p, Max4K, Max720p, Only1080p, Only720p, Only4K)
+            get() = listOf(Max1080p, Max1440p, Max4K, Max720p, Portrait916, Only1080p, Only720p, Only4K, Custom)
 
         fun fromKey(key: String): UvcResolutionProfileOption {
             return values.firstOrNull { it.key == key } ?: Max1080p
@@ -193,6 +221,9 @@ data class UserPreferences(
     val boostUsbIrqPriority: Boolean,
     val uvcExposedFormatsOption: UvcExposedFormatsOption = UvcExposedFormatsOption.Both,
     val uvcResolutionProfileOption: UvcResolutionProfileOption = UvcResolutionProfileOption.Max1080p,
+    val selectedResolutions: Set<String> = setOf("1920x1080", "1280x720", "640x480", "640x360"),
+    val defaultResolution: String = "1920x1080",
+    val customResolutions: Set<String> = emptySet(),
     val customUsbProductName: String = "",
     val customUsbManufacturerName: String = "",
     val jpegQuality: Int = 82,
@@ -215,9 +246,89 @@ data class GadgetUserPreferences(
     val resolutionProfileId: Int = 0,
     val customProductName: String = "",
     val customManufacturerName: String = "",
+    val selectedResolutions: Set<String> = setOf("1920x1080", "1280x720", "640x480", "640x360"),
+    val defaultResolution: String = "1920x1080",
+    val resolvedWidths: IntArray = intArrayOf(1920, 1280, 640, 640),
+    val resolvedHeights: IntArray = intArrayOf(1080, 720, 480, 360),
+    val defaultFrameIndex: Int = 1,
 ) : Parcelable {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (javaClass != other?.javaClass) return false
+
+        other as GadgetUserPreferences
+
+        if (usbGadgetPath != other.usbGadgetPath) return false
+        if (uvcVideoDevicePath != other.uvcVideoDevicePath) return false
+        if (createNewGadgetForFunctions != other.createNewGadgetForFunctions) return false
+        if (disableGadgetFunctionsDuringConfiguration != other.disableGadgetFunctionsDuringConfiguration) return false
+        if (uvcMaxPacketSize != other.uvcMaxPacketSize) return false
+        if (uvcMaxBurst != other.uvcMaxBurst) return false
+        if (boostUsbIrqPriority != other.boostUsbIrqPriority) return false
+        if (exposedFormats != other.exposedFormats) return false
+        if (resolutionProfile != other.resolutionProfile) return false
+        if (resolutionProfileId != other.resolutionProfileId) return false
+        if (customProductName != other.customProductName) return false
+        if (customManufacturerName != other.customManufacturerName) return false
+        if (selectedResolutions != other.selectedResolutions) return false
+        if (defaultResolution != other.defaultResolution) return false
+        if (!resolvedWidths.contentEquals(other.resolvedWidths)) return false
+        if (!resolvedHeights.contentEquals(other.resolvedHeights)) return false
+        if (defaultFrameIndex != other.defaultFrameIndex) return false
+
+        return true
+    }
+
+    override fun hashCode(): Int {
+        var result = usbGadgetPath.hashCode()
+        result = 31 * result + uvcVideoDevicePath.hashCode()
+        result = 31 * result + createNewGadgetForFunctions.hashCode()
+        result = 31 * result + disableGadgetFunctionsDuringConfiguration.hashCode()
+        result = 31 * result + uvcMaxPacketSize
+        result = 31 * result + uvcMaxBurst
+        result = 31 * result + boostUsbIrqPriority.hashCode()
+        result = 31 * result + exposedFormats.hashCode()
+        result = 31 * result + resolutionProfile.hashCode()
+        result = 31 * result + resolutionProfileId
+        result = 31 * result + customProductName.hashCode()
+        result = 31 * result + customManufacturerName.hashCode()
+        result = 31 * result + selectedResolutions.hashCode()
+        result = 31 * result + defaultResolution.hashCode()
+        result = 31 * result + resolvedWidths.contentHashCode()
+        result = 31 * result + resolvedHeights.contentHashCode()
+        result = 31 * result + defaultFrameIndex
+        return result
+    }
+
     companion object {
         fun fromUserPreferences(userPreferences: UserPreferences): GadgetUserPreferences {
+            val profile = userPreferences.uvcResolutionProfileOption
+            val items: List<ResolutionItem> = if (profile == UvcResolutionProfileOption.Custom) {
+                val parsed = userPreferences.selectedResolutions.mapNotNull { ResolutionItem.fromKey(it) }
+                if (parsed.isNotEmpty()) {
+                    parsed.sorted()
+                } else {
+                    listOf(ResolutionItem(1920, 1080))
+                }
+            } else {
+                val (presetItems, _) = ResolutionItem.getPresetResolutions(profile.key)
+                presetItems
+            }
+
+            val capped = items.take(16)
+            val widths = capped.map { it.width }.toIntArray()
+            val heights = capped.map { it.height }.toIntArray()
+
+            val defaultKey = if (profile == UvcResolutionProfileOption.Custom) {
+                userPreferences.defaultResolution
+            } else {
+                val (_, presetDef) = ResolutionItem.getPresetResolutions(profile.key)
+                presetDef.key
+            }
+
+            val defIndex = capped.indexOfFirst { it.key == defaultKey }
+            val resolvedDefaultFrameIndex = if (defIndex >= 0) defIndex + 1 else 1
+
             return GadgetUserPreferences(
                 usbGadgetPath = userPreferences.usbGadgetPath,
                 uvcVideoDevicePath = userPreferences.uvcVideoDevicePath,
@@ -231,6 +342,11 @@ data class GadgetUserPreferences(
                 resolutionProfileId = userPreferences.uvcResolutionProfileOption.profileId,
                 customProductName = userPreferences.customUsbProductName,
                 customManufacturerName = userPreferences.customUsbManufacturerName,
+                selectedResolutions = userPreferences.selectedResolutions,
+                defaultResolution = userPreferences.defaultResolution,
+                resolvedWidths = widths,
+                resolvedHeights = heights,
+                defaultFrameIndex = resolvedDefaultFrameIndex,
             )
         }
     }
@@ -262,6 +378,9 @@ class UserPreferencesRepository private constructor(application: Application) {
                 boostUsbIrqPriority = AppPreference.BoostUsbIrqPriority.getValue(),
                 uvcExposedFormatsOption = AppPreference.UvcExposedFormatsPref.getValue(),
                 uvcResolutionProfileOption = AppPreference.UvcResolutionProfilePref.getValue(),
+                selectedResolutions = AppPreference.SelectedResolutionsPref.getValue(),
+                defaultResolution = AppPreference.DefaultResolutionPref.getValue(),
+                customResolutions = AppPreference.CustomResolutionsPref.getValue(),
                 customUsbProductName = AppPreference.CustomUsbProductNamePref.getValue(),
                 customUsbManufacturerName = AppPreference.CustomUsbManufacturerNamePref.getValue(),
                 jpegQuality = AppPreference.JpegQualityPref.getValue(),
@@ -282,6 +401,73 @@ class UserPreferencesRepository private constructor(application: Application) {
     fun <T> resetPreferenceToDefault(key: PreferenceKey<T>) {
         key.resetToDefault()
         _userPreferencesFlow.update { userPreferences }
+    }
+
+    fun selectResolutionProfile(profile: UvcResolutionProfileOption) {
+        setPreference(AppPreference.UvcResolutionProfilePref, profile)
+        if (profile != UvcResolutionProfileOption.Custom) {
+            val (presetItems, presetDefault) = ResolutionItem.getPresetResolutions(profile.key)
+            setPreference(AppPreference.SelectedResolutionsPref, presetItems.map { it.key }.toSet())
+            setPreference(AppPreference.DefaultResolutionPref, presetDefault.key)
+        }
+    }
+
+    fun toggleResolution(resKey: String, isSelected: Boolean) {
+        val current = getPreference(AppPreference.SelectedResolutionsPref).toMutableSet()
+        if (isSelected) {
+            current.add(resKey)
+        } else {
+            if (current.size > 1) {
+                current.remove(resKey)
+            }
+        }
+        setPreference(AppPreference.SelectedResolutionsPref, current)
+        setPreference(AppPreference.UvcResolutionProfilePref, UvcResolutionProfileOption.Custom)
+
+        val defaultRes = getPreference(AppPreference.DefaultResolutionPref)
+        if (!current.contains(defaultRes)) {
+            current.firstOrNull()?.let {
+                setPreference(AppPreference.DefaultResolutionPref, it)
+            }
+        }
+    }
+
+    fun setDefaultResolution(resKey: String) {
+        val current = getPreference(AppPreference.SelectedResolutionsPref).toMutableSet()
+        current.add(resKey)
+        setPreference(AppPreference.SelectedResolutionsPref, current)
+        setPreference(AppPreference.DefaultResolutionPref, resKey)
+    }
+
+    fun addCustomResolution(width: Int, height: Int): Boolean {
+        if (width <= 0 || height <= 0 || width > 7680 || height > 7680) return false
+        val key = "${width}x${height}"
+        val custom = getPreference(AppPreference.CustomResolutionsPref).toMutableSet()
+        custom.add(key)
+        setPreference(AppPreference.CustomResolutionsPref, custom)
+
+        val selected = getPreference(AppPreference.SelectedResolutionsPref).toMutableSet()
+        selected.add(key)
+        setPreference(AppPreference.SelectedResolutionsPref, selected)
+        setPreference(AppPreference.UvcResolutionProfilePref, UvcResolutionProfileOption.Custom)
+        return true
+    }
+
+    fun removeCustomResolution(key: String) {
+        val custom = getPreference(AppPreference.CustomResolutionsPref).toMutableSet()
+        custom.remove(key)
+        setPreference(AppPreference.CustomResolutionsPref, custom)
+
+        val selected = getPreference(AppPreference.SelectedResolutionsPref).toMutableSet()
+        if (selected.contains(key) && selected.size > 1) {
+            selected.remove(key)
+            setPreference(AppPreference.SelectedResolutionsPref, selected)
+            if (getPreference(AppPreference.DefaultResolutionPref) == key) {
+                selected.firstOrNull()?.let {
+                    setPreference(AppPreference.DefaultResolutionPref, it)
+                }
+            }
+        }
     }
 
     companion object {

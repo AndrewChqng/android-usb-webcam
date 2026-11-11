@@ -17,6 +17,7 @@ import com.andrewchqng.usbwebcam.settings.GadgetUserPreferences
 import com.andrewchqng.usbwebcam.shell_utils.RootStateHolder
 import timber.log.Timber
 import java.io.File
+import java.util.Locale
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -121,50 +122,71 @@ class CharacterDeviceManager private constructor(private val application: Applic
         val customProduct = prefs.customProductName.trim()
         val customMfg = prefs.customManufacturerName.trim()
 
-        val (mjpegFrames, mjpegDefaultIdx) = when (prefs.resolutionProfile) {
-            "max_1440p" -> listOf(
-                MJPEG_FRAME_360P, MJPEG_FRAME_480P, MJPEG_FRAME_720P, MJPEG_FRAME_1080P, MJPEG_FRAME_1440P
-            ) to 5
-            "max_4k" -> listOf(
-                MJPEG_FRAME_360P, MJPEG_FRAME_480P, MJPEG_FRAME_720P, MJPEG_FRAME_1080P, MJPEG_FRAME_1440P, MJPEG_FRAME_4K
-            ) to 6
-            "max_720p" -> listOf(
-                MJPEG_FRAME_360P, MJPEG_FRAME_480P, MJPEG_FRAME_720P
-            ) to 3
-            "only_1080p" -> listOf(
-                MJPEG_FRAME_1080P.copy(dirName = "f1_1080p")
-            ) to 1
-            "only_720p" -> listOf(
-                MJPEG_FRAME_720P.copy(dirName = "f1_720p")
-            ) to 1
-            "only_4k" -> listOf(
-                MJPEG_FRAME_4K.copy(dirName = "f1_4k")
-            ) to 1
-            else -> listOf(
-                MJPEG_FRAME_360P, MJPEG_FRAME_480P, MJPEG_FRAME_720P, MJPEG_FRAME_1080P
-            ) to 4
+        val resolvedWidths = if (prefs.resolvedWidths.isNotEmpty()) prefs.resolvedWidths else intArrayOf(1920, 1280, 640, 640)
+        val resolvedHeights = if (prefs.resolvedHeights.isNotEmpty()) prefs.resolvedHeights else intArrayOf(1080, 720, 480, 360)
+        val defaultIdx = prefs.defaultFrameIndex.coerceIn(1, resolvedWidths.size)
+
+        val mjpegFrames = mutableListOf<UvcFrameConfig>()
+        val yuyvFrames = mutableListOf<UvcFrameConfig>()
+
+        for (i in resolvedWidths.indices) {
+            val w = resolvedWidths[i]
+            val h = resolvedHeights[i]
+            val dirName = String.format(Locale.US, "f%02d_%dx%d", i + 1, w, h)
+            val pixels = w.toLong() * h
+            val maxBufSize = pixels * 2
+
+            val mjpegIntervals = if (pixels <= 1920L * 1080L) {
+                listOf(166666L, 333333L, 666666L)
+            } else {
+                listOf(333333L, 666666L)
+            }
+            val mjpegDefInterval = 333333L
+            val mjpegMinBitRate = (pixels * 16 * 15) / 8
+            val mjpegMaxBitRate = pixels * 16 * 30
+            mjpegFrames.add(
+                UvcFrameConfig(
+                    dirName = dirName,
+                    width = w,
+                    height = h,
+                    minBitRate = mjpegMinBitRate,
+                    maxBitRate = mjpegMaxBitRate,
+                    maxBufSize = maxBufSize,
+                    defaultInterval = mjpegDefInterval,
+                    intervals = mjpegIntervals
+                )
+            )
+
+            val yuyvIntervals: List<Long>
+            val yuyvDefInterval: Long
+            if (pixels <= 640L * 480L) {
+                yuyvIntervals = listOf(333333L, 666666L, 1000000L)
+                yuyvDefInterval = 333333L
+            } else if (pixels <= 1280L * 720L) {
+                yuyvIntervals = listOf(666666L, 1000000L, 2000000L)
+                yuyvDefInterval = 666666L
+            } else {
+                yuyvIntervals = listOf(2000000L)
+                yuyvDefInterval = 2000000L
+            }
+            val yuyvMinBitRate = pixels * 16 * 5
+            val yuyvMaxBitRate = pixels * 16 * 30
+            yuyvFrames.add(
+                UvcFrameConfig(
+                    dirName = dirName,
+                    width = w,
+                    height = h,
+                    minBitRate = yuyvMinBitRate,
+                    maxBitRate = yuyvMaxBitRate,
+                    maxBufSize = maxBufSize,
+                    defaultInterval = yuyvDefInterval,
+                    intervals = yuyvIntervals
+                )
+            )
         }
 
-        val (yuyvFrames, yuyvDefaultIdx) = when (prefs.resolutionProfile) {
-            "max_720p" -> listOf(
-                YUYV_FRAME_360P, YUYV_FRAME_480P, YUYV_FRAME_720P
-            ) to 3
-            "only_1080p" -> listOf(
-                YUYV_FRAME_1080P.copy(dirName = "f1_1080p")
-            ) to 1
-            "only_720p" -> listOf(
-                YUYV_FRAME_720P.copy(dirName = "f1_720p")
-            ) to 1
-            "only_4k" -> listOf(
-                YUYV_FRAME_1080P.copy(dirName = "f1_1080p")
-            ) to 1
-            else -> listOf(
-                YUYV_FRAME_360P, YUYV_FRAME_480P, YUYV_FRAME_720P, YUYV_FRAME_1080P
-            ) to 4
-        }
-
-        val mjpegFramesScript = generateFrameCommands("streaming/mjpeg/m", mjpegFrames, mjpegDefaultIdx)
-        val yuyvFramesScript = generateFrameCommands("streaming/uncompressed/u", yuyvFrames, yuyvDefaultIdx)
+        val mjpegFramesScript = generateFrameCommands("streaming/mjpeg/m", mjpegFrames, defaultIdx)
+        val yuyvFramesScript = generateFrameCommands("streaming/uncompressed/u", yuyvFrames, defaultIdx)
 
         val script = """
             G="$gPath"

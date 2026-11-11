@@ -75,6 +75,7 @@ import com.andrewchqng.usbwebcam.shell_utils.RootStateHolder
 import com.andrewchqng.usbwebcam.troubleshooting.TroubleshootingScreen
 import com.andrewchqng.usbwebcam.ui.standalone_screens.HelpScreen
 import com.andrewchqng.usbwebcam.ui.standalone_screens.InfoScreen
+import com.andrewchqng.usbwebcam.settings.ResolutionManagerDialog
 import com.andrewchqng.usbwebcam.settings.UvcResolutionProfileOption
 import com.andrewchqng.usbwebcam.ui.theme.PaddingNormal
 import com.andrewchqng.usbwebcam.ui.utils.BasicPage
@@ -104,6 +105,7 @@ fun MainPage(
     val clipboardManager = LocalClipboardManager.current
     val coroutineScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+    var showResolutionDialog by remember { mutableStateOf(false) }
 
     val permissionsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -422,6 +424,23 @@ fun MainPage(
             }
         }
 
+        if (showResolutionDialog) {
+            val discoveredResolutions = remember { mainViewModel.getDiscoveredResolutions() }
+            ResolutionManagerDialog(
+                availableResolutions = discoveredResolutions,
+                selectedResolutions = userPreferences.selectedResolutions,
+                defaultResolution = userPreferences.defaultResolution,
+                customResolutions = userPreferences.customResolutions,
+                currentProfile = userPreferences.uvcResolutionProfileOption,
+                onSelectProfile = { mainViewModel.setResolutionProfile(it) },
+                onToggleResolution = { key, sel -> mainViewModel.toggleResolution(key, sel) },
+                onSetDefaultResolution = { key -> mainViewModel.setDefaultResolution(key) },
+                onAddCustomResolution = { w, h -> mainViewModel.addCustomResolution(w, h) },
+                onRemoveCustomResolution = { key -> mainViewModel.removeCustomResolution(key) },
+                onDismissRequest = { showResolutionDialog = false }
+            )
+        }
+
         // Resolution Profile Selection Card
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(
@@ -435,18 +454,32 @@ fun MainPage(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "Exposed Resolution Profile",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold
-                    )
-                    if (webcamState.isUvcLoopRunning) {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "(Restart webcam to apply)",
+                            text = "Exposed Resolution Profile",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "${userPreferences.selectedResolutions.size} active formats • Default: ${userPreferences.defaultResolution}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                    OutlinedButton(
+                        onClick = { showResolutionDialog = true },
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                    ) {
+                        Text("Customize", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+
+                if (webcamState.isUvcLoopRunning) {
+                    Text(
+                        text = "(Restart webcam to apply profile changes)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
                 }
 
                 FlowRow(
@@ -460,9 +493,11 @@ fun MainPage(
                             UvcResolutionProfileOption.Max1440p -> "Max 1440p 2K"
                             UvcResolutionProfileOption.Max4K -> "Max 4K UHD"
                             UvcResolutionProfileOption.Max720p -> "Max 720p HD"
+                            UvcResolutionProfileOption.Portrait916 -> "Vertical (9:16)"
                             UvcResolutionProfileOption.Only1080p -> "Only 1080p (Forced)"
                             UvcResolutionProfileOption.Only720p -> "Only 720p (Forced)"
                             UvcResolutionProfileOption.Only4K -> "Only 4K (Forced)"
+                            UvcResolutionProfileOption.Custom -> "Custom Set"
                         }
                         FilterChip(
                             selected = currentProfile == opt,

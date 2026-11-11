@@ -68,20 +68,9 @@ struct UvcContext {
     UvcFormatDesc formats[2]{};
 };
 
-static void initContextFormats(UvcContext* ctx, bool isYuyvOnly, int profileId) {
+static void initContextFormats(UvcContext* ctx, bool isYuyvOnly, int profileId,
+                               const uint16_t* widths = nullptr, const uint16_t* heights = nullptr, int numResolutions = 0) {
     if (!ctx) return;
-
-    const UvcFrameDesc frm360p = {1, 640, 360, 333333, {166666, 333333, 666666, 0}};
-    const UvcFrameDesc frm480p = {2, 640, 480, 333333, {166666, 333333, 666666, 0}};
-    const UvcFrameDesc frm720p = {3, 1280, 720, 333333, {166666, 333333, 666666, 0}};
-    const UvcFrameDesc frm1080p = {4, 1920, 1080, 333333, {166666, 333333, 666666, 0}};
-    const UvcFrameDesc frm1440p = {5, 2560, 1440, 333333, {166666, 333333, 666666, 0}};
-    const UvcFrameDesc frm4k = {6, 3840, 2160, 333333, {333333, 666666, 0, 0}};
-
-    const UvcFrameDesc yuyv360p = {1, 640, 360, 333333, {333333, 666666, 1000000, 0}};
-    const UvcFrameDesc yuyv480p = {2, 640, 480, 333333, {333333, 666666, 1000000, 0}};
-    const UvcFrameDesc yuyv720p = {3, 1280, 720, 666666, {666666, 1000000, 2000000, 0}};
-    const UvcFrameDesc yuyv1080p = {4, 1920, 1080, 2000000, {2000000, 0, 0, 0}};
 
     UvcFormatDesc mjpegFmt{};
     mjpegFmt.formatIndex = 1;
@@ -91,88 +80,168 @@ static void initContextFormats(UvcContext* ctx, bool isYuyvOnly, int profileId) 
     yuyvFmt.formatIndex = isYuyvOnly ? 1 : 2;
     yuyvFmt.fourcc = V4L2_PIX_FMT_YUYV;
 
-    switch (profileId) {
-        case 1: // Max 1440p (2K)
-            mjpegFmt.numFrames = 5;
-            mjpegFmt.frames[0] = frm360p;
-            mjpegFmt.frames[1] = frm480p;
-            mjpegFmt.frames[2] = frm720p;
-            mjpegFmt.frames[3] = frm1080p;
-            mjpegFmt.frames[4] = frm1440p;
+    if (numResolutions > 0 && widths != nullptr && heights != nullptr) {
+        int count = std::min(numResolutions, 16);
+        mjpegFmt.numFrames = static_cast<uint8_t>(count);
+        yuyvFmt.numFrames = static_cast<uint8_t>(count);
 
-            yuyvFmt.numFrames = 4;
-            yuyvFmt.frames[0] = yuyv360p;
-            yuyvFmt.frames[1] = yuyv480p;
-            yuyvFmt.frames[2] = yuyv720p;
-            yuyvFmt.frames[3] = yuyv1080p;
-            break;
+        for (int i = 0; i < count; ++i) {
+            uint16_t w = widths[i];
+            uint16_t h = heights[i];
+            uint64_t pixels = static_cast<uint64_t>(w) * h;
 
-        case 2: // Max 4K (2160p)
-            mjpegFmt.numFrames = 6;
-            mjpegFmt.frames[0] = frm360p;
-            mjpegFmt.frames[1] = frm480p;
-            mjpegFmt.frames[2] = frm720p;
-            mjpegFmt.frames[3] = frm1080p;
-            mjpegFmt.frames[4] = frm1440p;
-            mjpegFmt.frames[5] = frm4k;
+            // MJPEG frame intervals
+            uint32_t mjpegDefInterval = 333333;
+            uint32_t mjpegIntervals[4] = {0};
+            if (pixels <= 1920ULL * 1080ULL) {
+                mjpegIntervals[0] = 166666;
+                mjpegIntervals[1] = 333333;
+                mjpegIntervals[2] = 666666;
+            } else {
+                mjpegIntervals[0] = 333333;
+                mjpegIntervals[1] = 666666;
+            }
+            mjpegFmt.frames[i] = {
+                static_cast<uint8_t>(i + 1),
+                w,
+                h,
+                mjpegDefInterval,
+                {mjpegIntervals[0], mjpegIntervals[1], mjpegIntervals[2], 0}
+            };
 
-            yuyvFmt.numFrames = 4;
-            yuyvFmt.frames[0] = yuyv360p;
-            yuyvFmt.frames[1] = yuyv480p;
-            yuyvFmt.frames[2] = yuyv720p;
-            yuyvFmt.frames[3] = yuyv1080p;
-            break;
+            // YUYV frame intervals
+            uint32_t yuyvDefInterval = 2000000;
+            uint32_t yuyvIntervals[4] = {0};
+            if (pixels <= 640ULL * 480ULL) {
+                yuyvDefInterval = 333333;
+                yuyvIntervals[0] = 333333;
+                yuyvIntervals[1] = 666666;
+                yuyvIntervals[2] = 1000000;
+            } else if (pixels <= 1280ULL * 720ULL) {
+                yuyvDefInterval = 666666;
+                yuyvIntervals[0] = 666666;
+                yuyvIntervals[1] = 1000000;
+                yuyvIntervals[2] = 2000000;
+            } else {
+                yuyvDefInterval = 2000000;
+                yuyvIntervals[0] = 2000000;
+            }
+            yuyvFmt.frames[i] = {
+                static_cast<uint8_t>(i + 1),
+                w,
+                h,
+                yuyvDefInterval,
+                {yuyvIntervals[0], yuyvIntervals[1], yuyvIntervals[2], 0}
+            };
+        }
+    } else {
+        const UvcFrameDesc frm360p = {1, 640, 360, 333333, {166666, 333333, 666666, 0}};
+        const UvcFrameDesc frm480p = {2, 640, 480, 333333, {166666, 333333, 666666, 0}};
+        const UvcFrameDesc frm720p = {3, 1280, 720, 333333, {166666, 333333, 666666, 0}};
+        const UvcFrameDesc frm1080p = {4, 1920, 1080, 333333, {166666, 333333, 666666, 0}};
+        const UvcFrameDesc frm1440p = {5, 2560, 1440, 333333, {166666, 333333, 666666, 0}};
+        const UvcFrameDesc frm4k = {6, 3840, 2160, 333333, {333333, 666666, 0, 0}};
 
-        case 3: // Max 720p (HD)
-            mjpegFmt.numFrames = 3;
-            mjpegFmt.frames[0] = frm360p;
-            mjpegFmt.frames[1] = frm480p;
-            mjpegFmt.frames[2] = frm720p;
+        const UvcFrameDesc yuyv360p = {1, 640, 360, 333333, {333333, 666666, 1000000, 0}};
+        const UvcFrameDesc yuyv480p = {2, 640, 480, 333333, {333333, 666666, 1000000, 0}};
+        const UvcFrameDesc yuyv720p = {3, 1280, 720, 666666, {666666, 1000000, 2000000, 0}};
+        const UvcFrameDesc yuyv1080p = {4, 1920, 1080, 2000000, {2000000, 0, 0, 0}};
 
-            yuyvFmt.numFrames = 3;
-            yuyvFmt.frames[0] = yuyv360p;
-            yuyvFmt.frames[1] = yuyv480p;
-            yuyvFmt.frames[2] = yuyv720p;
-            break;
+        switch (profileId) {
+            case 1: // Max 1440p (2K)
+                mjpegFmt.numFrames = 5;
+                mjpegFmt.frames[0] = frm360p;
+                mjpegFmt.frames[1] = frm480p;
+                mjpegFmt.frames[2] = frm720p;
+                mjpegFmt.frames[3] = frm1080p;
+                mjpegFmt.frames[4] = frm1440p;
 
-        case 4: // Only 1080p (FHD Forced)
-            mjpegFmt.numFrames = 1;
-            mjpegFmt.frames[0] = {1, 1920, 1080, 333333, {166666, 333333, 666666, 0}};
+                yuyvFmt.numFrames = 4;
+                yuyvFmt.frames[0] = yuyv360p;
+                yuyvFmt.frames[1] = yuyv480p;
+                yuyvFmt.frames[2] = yuyv720p;
+                yuyvFmt.frames[3] = yuyv1080p;
+                break;
 
-            yuyvFmt.numFrames = 1;
-            yuyvFmt.frames[0] = {1, 1920, 1080, 2000000, {2000000, 0, 0, 0}};
-            break;
+            case 2: // Max 4K (2160p)
+                mjpegFmt.numFrames = 6;
+                mjpegFmt.frames[0] = frm360p;
+                mjpegFmt.frames[1] = frm480p;
+                mjpegFmt.frames[2] = frm720p;
+                mjpegFmt.frames[3] = frm1080p;
+                mjpegFmt.frames[4] = frm1440p;
+                mjpegFmt.frames[5] = frm4k;
 
-        case 5: // Only 720p (HD Forced)
-            mjpegFmt.numFrames = 1;
-            mjpegFmt.frames[0] = {1, 1280, 720, 333333, {166666, 333333, 666666, 0}};
+                yuyvFmt.numFrames = 4;
+                yuyvFmt.frames[0] = yuyv360p;
+                yuyvFmt.frames[1] = yuyv480p;
+                yuyvFmt.frames[2] = yuyv720p;
+                yuyvFmt.frames[3] = yuyv1080p;
+                break;
 
-            yuyvFmt.numFrames = 1;
-            yuyvFmt.frames[0] = {1, 1280, 720, 666666, {666666, 1000000, 2000000, 0}};
-            break;
+            case 3: // Max 720p (HD)
+                mjpegFmt.numFrames = 3;
+                mjpegFmt.frames[0] = frm360p;
+                mjpegFmt.frames[1] = frm480p;
+                mjpegFmt.frames[2] = frm720p;
 
-        case 6: // Only 4K (UHD Forced)
-            mjpegFmt.numFrames = 1;
-            mjpegFmt.frames[0] = {1, 3840, 2160, 333333, {333333, 666666, 0, 0}};
+                yuyvFmt.numFrames = 3;
+                yuyvFmt.frames[0] = yuyv360p;
+                yuyvFmt.frames[1] = yuyv480p;
+                yuyvFmt.frames[2] = yuyv720p;
+                break;
 
-            yuyvFmt.numFrames = 1;
-            yuyvFmt.frames[0] = {1, 1920, 1080, 2000000, {2000000, 0, 0, 0}};
-            break;
+            case 4: // Only 1080p (FHD Forced)
+                mjpegFmt.numFrames = 1;
+                mjpegFmt.frames[0] = {1, 1920, 1080, 333333, {166666, 333333, 666666, 0}};
 
-        case 0: // Max 1080p (Default)
-        default:
-            mjpegFmt.numFrames = 4;
-            mjpegFmt.frames[0] = frm360p;
-            mjpegFmt.frames[1] = frm480p;
-            mjpegFmt.frames[2] = frm720p;
-            mjpegFmt.frames[3] = frm1080p;
+                yuyvFmt.numFrames = 1;
+                yuyvFmt.frames[0] = {1, 1920, 1080, 2000000, {2000000, 0, 0, 0}};
+                break;
 
-            yuyvFmt.numFrames = 4;
-            yuyvFmt.frames[0] = yuyv360p;
-            yuyvFmt.frames[1] = yuyv480p;
-            yuyvFmt.frames[2] = yuyv720p;
-            yuyvFmt.frames[3] = yuyv1080p;
-            break;
+            case 5: // Only 720p (HD Forced)
+                mjpegFmt.numFrames = 1;
+                mjpegFmt.frames[0] = {1, 1280, 720, 333333, {166666, 333333, 666666, 0}};
+
+                yuyvFmt.numFrames = 1;
+                yuyvFmt.frames[0] = {1, 1280, 720, 666666, {666666, 1000000, 2000000, 0}};
+                break;
+
+            case 6: // Only 4K (UHD Forced)
+                mjpegFmt.numFrames = 1;
+                mjpegFmt.frames[0] = {1, 3840, 2160, 333333, {333333, 666666, 0, 0}};
+
+                yuyvFmt.numFrames = 1;
+                yuyvFmt.frames[0] = {1, 1920, 1080, 2000000, {2000000, 0, 0, 0}};
+                break;
+
+            case 7: // Portrait 9:16
+                mjpegFmt.numFrames = 3;
+                mjpegFmt.frames[0] = {1, 1080, 1920, 333333, {166666, 333333, 666666, 0}};
+                mjpegFmt.frames[1] = {2, 720, 1280, 333333, {166666, 333333, 666666, 0}};
+                mjpegFmt.frames[2] = {3, 1440, 2560, 333333, {166666, 333333, 666666, 0}};
+
+                yuyvFmt.numFrames = 3;
+                yuyvFmt.frames[0] = {1, 1080, 1920, 2000000, {2000000, 0, 0, 0}};
+                yuyvFmt.frames[1] = {2, 720, 1280, 666666, {666666, 1000000, 2000000, 0}};
+                yuyvFmt.frames[2] = {3, 1440, 2560, 2000000, {2000000, 0, 0, 0}};
+                break;
+
+            case 0: // Max 1080p (Default)
+            default:
+                mjpegFmt.numFrames = 4;
+                mjpegFmt.frames[0] = frm360p;
+                mjpegFmt.frames[1] = frm480p;
+                mjpegFmt.frames[2] = frm720p;
+                mjpegFmt.frames[3] = frm1080p;
+
+                yuyvFmt.numFrames = 4;
+                yuyvFmt.frames[0] = yuyv360p;
+                yuyvFmt.frames[1] = yuyv480p;
+                yuyvFmt.frames[2] = yuyv720p;
+                yuyvFmt.frames[3] = yuyv1080p;
+                break;
+        }
     }
 
     if (isYuyvOnly) {
@@ -744,7 +813,10 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeOpen(
     jstring jDevicePath,
     jint maxPayloadSize,
     jboolean isYuyvOnly,
-    jint resolutionProfile
+    jint resolutionProfile,
+    jintArray jWidths,
+    jintArray jHeights,
+    jint defaultFrameIndex
 ) {
     std::lock_guard<std::mutex> lock(g_ctx_mutex);
 
@@ -765,8 +837,8 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeOpen(
         env->ReleaseStringUTFChars(jDevicePath, path);
         return -err;
     }
-    LOGI("Opened UVC V4L2 device: %s (fd=%d, maxPayload=%d, isYuyvOnly=%d, profile=%d)",
-         path, fd, maxPayloadSize, isYuyvOnly, resolutionProfile);
+    LOGI("Opened UVC V4L2 device: %s (fd=%d, maxPayload=%d, isYuyvOnly=%d, profile=%d, defaultFrameIndex=%d)",
+         path, fd, maxPayloadSize, isYuyvOnly, resolutionProfile, defaultFrameIndex);
     env->ReleaseStringUTFChars(jDevicePath, path);
 
     struct v4l2_capability cap {};
@@ -783,18 +855,37 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeOpen(
     ctx->max_payload_size = (maxPayloadSize > 0) ? static_cast<uint32_t>(maxPayloadSize) : 1024u;
     ctx->is_yuyv_only = (isYuyvOnly == JNI_TRUE);
 
-    initContextFormats(ctx, ctx->is_yuyv_only, resolutionProfile);
+    uint16_t localWidths[16];
+    uint16_t localHeights[16];
+    int numRes = 0;
+    if (jWidths != nullptr && jHeights != nullptr) {
+        jsize lenW = env->GetArrayLength(jWidths);
+        jsize lenH = env->GetArrayLength(jHeights);
+        jint* wPtr = env->GetIntArrayElements(jWidths, nullptr);
+        jint* hPtr = env->GetIntArrayElements(jHeights, nullptr);
+        numRes = std::min({(int)lenW, (int)lenH, 16});
+        for (int i = 0; i < numRes; ++i) {
+            localWidths[i] = static_cast<uint16_t>(wPtr[i]);
+            localHeights[i] = static_cast<uint16_t>(hPtr[i]);
+        }
+        env->ReleaseIntArrayElements(jWidths, wPtr, JNI_ABORT);
+        env->ReleaseIntArrayElements(jHeights, hPtr, JNI_ABORT);
+    }
+
+    initContextFormats(ctx, ctx->is_yuyv_only, resolutionProfile, localWidths, localHeights, numRes);
 
     int defaultFormatIndex = 1;
-    int defaultFrameIndex = (ctx->formats[0].numFrames > 0) ? ctx->formats[0].numFrames : 1;
-    uint32_t defaultInterval = ctx->formats[0].frames[defaultFrameIndex - 1].defaultInterval;
+    int resolvedDefFrame = (defaultFrameIndex >= 1 && defaultFrameIndex <= ctx->formats[0].numFrames)
+        ? defaultFrameIndex
+        : ((ctx->formats[0].numFrames > 0) ? ctx->formats[0].numFrames : 1);
+    uint32_t defaultInterval = ctx->formats[0].frames[resolvedDefFrame - 1].defaultInterval;
 
-    fillStreamingControl(ctx, &ctx->probe_ctrl, defaultFormatIndex, defaultFrameIndex, defaultInterval);
-    fillStreamingControl(ctx, &ctx->commit_ctrl, defaultFormatIndex, defaultFrameIndex, defaultInterval);
+    fillStreamingControl(ctx, &ctx->probe_ctrl, defaultFormatIndex, resolvedDefFrame, defaultInterval);
+    fillStreamingControl(ctx, &ctx->commit_ctrl, defaultFormatIndex, resolvedDefFrame, defaultInterval);
 
     ctx->active_fourcc = ctx->formats[0].fourcc;
-    ctx->active_width = ctx->formats[0].frames[defaultFrameIndex - 1].width;
-    ctx->active_height = ctx->formats[0].frames[defaultFrameIndex - 1].height;
+    ctx->active_width = ctx->formats[0].frames[resolvedDefFrame - 1].width;
+    ctx->active_height = ctx->formats[0].frames[resolvedDefFrame - 1].height;
     ctx->active_interval = defaultInterval;
 
     for (uint32_t evType = UVC_EVENT_FIRST; evType <= UVC_EVENT_LAST; ++evType) {

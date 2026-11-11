@@ -1,9 +1,12 @@
 package com.andrewchqng.usbwebcam.webserver
 
 import android.app.Application
+import android.content.Context
+import android.hardware.camera2.CameraManager
 import com.andrewchqng.usbwebcam.hid_utils.CharacterDeviceManager
 import com.andrewchqng.usbwebcam.settings.AppPreference
 import com.andrewchqng.usbwebcam.settings.GadgetUserPreferences
+import com.andrewchqng.usbwebcam.settings.ResolutionItem
 import com.andrewchqng.usbwebcam.settings.UvcResolutionProfileOption
 import com.andrewchqng.usbwebcam.settings.UserPreferencesRepository
 import com.andrewchqng.usbwebcam.shell_utils.RootStateHolder
@@ -308,8 +311,43 @@ class WebcamWebServer private constructor(private val application: Application) 
         json.put("studioQuality", s.studioQualityProcessing)
         json.put("lastError", s.lastError ?: "")
 
-        val resProfile = UserPreferencesRepository.getInstance(application).userPreferencesFlow.value.uvcResolutionProfileOption.key
-        json.put("resolutionProfile", resProfile)
+        val userPrefs = UserPreferencesRepository.getInstance(application).userPreferencesFlow.value
+        json.put("resolutionProfile", userPrefs.uvcResolutionProfileOption.key)
+        json.put("defaultResolution", userPrefs.defaultResolution)
+
+        val selArray = JSONArray()
+        for (r in userPrefs.selectedResolutions) {
+            selArray.put(r)
+        }
+        json.put("selectedResolutions", selArray)
+
+        val customArray = JSONArray()
+        for (c in userPrefs.customResolutions) {
+            customArray.put(c)
+        }
+        json.put("customResolutions", customArray)
+
+        val camManager = application.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
+        val discovered = if (camManager != null) {
+            ResolutionItem.discoverSensorResolutions(camManager)
+        } else {
+            ResolutionItem.BASELINE_RESOLUTIONS
+        }.toMutableSet()
+        for (k in userPrefs.customResolutions) {
+            ResolutionItem.fromKey(k, isCustom = true)?.let { discovered.add(it) }
+        }
+        val availArray = JSONArray()
+        for (item in discovered.sorted()) {
+            val itemObj = JSONObject()
+            itemObj.put("key", item.key)
+            itemObj.put("width", item.width)
+            itemObj.put("height", item.height)
+            itemObj.put("aspectRatio", item.aspectRatio)
+            itemObj.put("displayName", item.displayName)
+            itemObj.put("isCustom", userPrefs.customResolutions.contains(item.key))
+            availArray.put(itemObj)
+        }
+        json.put("availableResolutions", availArray)
 
         val urlsArray = JSONArray()
         for (u in _state.value.urls) {
@@ -343,6 +381,32 @@ class WebcamWebServer private constructor(private val application: Application) 
             "resetIsp" -> {
                 webcamController.resetIspControls()
             }
+            "toggleResolution" -> {
+                val res = json.optString("resolution")
+                val sel = json.optBoolean("selected")
+                if (res.isNotEmpty()) {
+                    UserPreferencesRepository.getInstance(application).toggleResolution(res, sel)
+                }
+            }
+            "setDefaultResolution" -> {
+                val res = json.optString("resolution")
+                if (res.isNotEmpty()) {
+                    UserPreferencesRepository.getInstance(application).setDefaultResolution(res)
+                }
+            }
+            "addCustomResolution" -> {
+                val w = json.optInt("width")
+                val h = json.optInt("height")
+                if (w > 0 && h > 0) {
+                    UserPreferencesRepository.getInstance(application).addCustomResolution(w, h)
+                }
+            }
+            "removeCustomResolution" -> {
+                val res = json.optString("resolution")
+                if (res.isNotEmpty()) {
+                    UserPreferencesRepository.getInstance(application).removeCustomResolution(res)
+                }
+            }
         }
     }
 
@@ -364,7 +428,7 @@ class WebcamWebServer private constructor(private val application: Application) 
         if (json.has("resolutionProfile")) {
             val key = json.optString("resolutionProfile")
             val opt = UvcResolutionProfileOption.fromKey(key)
-            UserPreferencesRepository.getInstance(application).setPreference(AppPreference.UvcResolutionProfilePref, opt)
+            UserPreferencesRepository.getInstance(application).selectResolutionProfile(opt)
         }
         if (json.has("rotation")) {
             webcamController.setRotation(json.optInt("rotation"))
@@ -677,10 +741,37 @@ class WebcamWebServer private constructor(private val application: Application) 
             <button class="pill-btn" id="res-max_1440p" onclick="setResProfile('max_1440p')">Max 1440p 2K</button>
             <button class="pill-btn" id="res-max_4k" onclick="setResProfile('max_4k')">Max 4K UHD</button>
             <button class="pill-btn" id="res-max_720p" onclick="setResProfile('max_720p')">Max 720p</button>
+            <button class="pill-btn" id="res-portrait_9_16" onclick="setResProfile('portrait_9_16')">Vertical 9:16</button>
             <button class="pill-btn" id="res-only_1080p" onclick="setResProfile('only_1080p')">Only 1080p</button>
             <button class="pill-btn" id="res-only_720p" onclick="setResProfile('only_720p')">Only 720p</button>
             <button class="pill-btn" id="res-only_4k" onclick="setResProfile('only_4k')">Only 4K</button>
+            <button class="pill-btn" id="res-custom" onclick="setResProfile('custom')">Custom Set</button>
           </div>
+          <details style="margin-top: 8px; font-size: 13px;">
+            <summary style="cursor: pointer; color: var(--accent); font-weight: 500;">
+              Manage Resolution Set (<span id="res-active-count">0</span> active, Default: <span id="res-active-default">-</span>)
+            </summary>
+            <div style="margin-top: 8px; padding: 10px; background: rgba(255,255,255,0.03); border-radius: 8px;">
+              <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
+                <label style="font-size: 11px; color: var(--text-muted);">Aspect Ratio Filter:</label>
+                <select id="sel-aspect-filter" onchange="renderResolutionList()" style="background: var(--bg-card); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px;">
+                  <option value="All">All</option>
+                  <option value="16:9">16:9 (Landscape)</option>
+                  <option value="9:16">9:16 (Vertical)</option>
+                  <option value="4:3">4:3 (Photo)</option>
+                  <option value="1:1">1:1 (Square)</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+              <div id="resolution-items-list" style="max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px;"></div>
+              <div style="display: flex; gap: 6px; align-items: center; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);">
+                <input type="number" id="inp-custom-w" placeholder="Width" style="width: 70px; background: var(--bg-card); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px;">
+                <span>×</span>
+                <input type="number" id="inp-custom-h" placeholder="Height" style="width: 70px; background: var(--bg-card); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px;">
+                <button class="pill-btn" onclick="addCustomRes()" style="padding: 3px 8px; font-size: 12px;">+ Add Custom</button>
+              </div>
+            </div>
+          </details>
         </div>
 
         <div class="control-group">
@@ -863,12 +954,80 @@ class WebcamWebServer private constructor(private val application: Application) 
       }).catch(console.error);
     }
 
-    function postAction(act) {
+    function postAction(act, extra = {}) {
       fetch('/api/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: act })
+        body: JSON.stringify(Object.assign({ action: act }, extra))
       }).then(() => fetchStatus()).catch(console.error);
+    }
+
+    function renderResolutionList() {
+      const data = window.lastResData;
+      if (!data || !data.availableResolutions) return;
+      const filter = document.getElementById('sel-aspect-filter').value;
+      const container = document.getElementById('resolution-items-list');
+      const selSet = new Set(data.selectedResolutions || []);
+      const defRes = data.defaultResolution || '';
+
+      const filtered = data.availableResolutions.filter(item => {
+        if (filter === 'All') return true;
+        if (filter === '16:9') return item.aspectRatio === '16:9';
+        if (filter === '9:16') return item.aspectRatio === '9:16';
+        if (filter === '4:3') return item.aspectRatio === '4:3' || item.aspectRatio === '3:4';
+        if (filter === '1:1') return item.aspectRatio === '1:1';
+        return !['16:9', '9:16', '4:3', '3:4', '1:1'].includes(item.aspectRatio);
+      });
+
+      container.innerHTML = filtered.map(item => {
+        const checked = selSet.has(item.key) ? 'checked' : '';
+        const isDefault = defRes === item.key;
+        const starColor = isDefault ? 'var(--accent)' : 'var(--text-muted)';
+        const starIcon = isDefault ? '★' : '☆';
+        const defaultBadge = isDefault ? '<span style="font-size: 10px; background: var(--accent); color: #000; padding: 1px 4px; border-radius: 3px; font-weight: bold;">Default</span>' : '';
+        const deleteBtn = item.isCustom
+          ? '<button onclick="removeCustomRes(\'' + item.key + '\')" style="background:none; border:none; color:var(--danger); cursor:pointer; font-size:14px; padding:0 4px;">✕</button>'
+          : '';
+
+        return '<div style="display: flex; align-items: center; justify-content: space-between; padding: 4px 6px; background: rgba(0,0,0,0.15); border-radius: 4px;">' +
+          '<label style="display: flex; align-items: center; gap: 8px; cursor: pointer; flex: 1;">' +
+            '<input type="checkbox" ' + checked + ' onchange="toggleRes(\'' + item.key + '\', this.checked)">' +
+            '<span style="font-weight: 500;">' + item.width + '×' + item.height + '</span>' +
+            '<span style="font-size: 11px; color: var(--accent);">' + item.aspectRatio + '</span>' +
+            defaultBadge +
+          '</label>' +
+          '<div style="display: flex; align-items: center; gap: 6px;">' +
+            '<button title="Set as default startup resolution" onclick="setDefaultRes(\'' + item.key + '\')" style="background:none; border:none; color:' + starColor + '; cursor:pointer; font-size:16px; padding:0 4px;">' + starIcon + '</button>' +
+            deleteBtn +
+          '</div>' +
+        '</div>';
+      }).join('');
+    }
+
+    function toggleRes(key, isSel) {
+      postAction('toggleResolution', { resolution: key, selected: isSel });
+      setTimeout(fetchStatus, 150);
+    }
+
+    function setDefaultRes(key) {
+      postAction('setDefaultResolution', { resolution: key });
+      setTimeout(fetchStatus, 150);
+    }
+
+    function addCustomRes() {
+      const w = parseInt(document.getElementById('inp-custom-w').value);
+      const h = parseInt(document.getElementById('inp-custom-h').value);
+      if (w > 0 && h > 0) {
+        postAction('addCustomResolution', { width: w, height: h });
+        document.getElementById('inp-custom-w').value = '';
+        document.getElementById('inp-custom-h').value = '';
+        setTimeout(fetchStatus, 200);
+      }
+    }
+
+    function removeCustomRes(key) {
+      postAction('removeCustomResolution', { resolution: key });
+      setTimeout(fetchStatus, 150);
     }
 
     function toggleWebcam() {
@@ -1003,10 +1162,20 @@ class WebcamWebServer private constructor(private val application: Application) 
       }
 
       // Resolution profile pills
-      ['max_1080p', 'max_1440p', 'max_4k', 'max_720p', 'only_1080p', 'only_720p', 'only_4k'].forEach(p => {
+      ['max_1080p', 'max_1440p', 'max_4k', 'max_720p', 'portrait_9_16', 'only_1080p', 'only_720p', 'only_4k', 'custom'].forEach(p => {
         const btn = document.getElementById('res-' + p);
         if (btn) btn.className = 'pill-btn' + (data.resolutionProfile === p ? ' active' : '');
       });
+
+      // Update resolution set count and default
+      if (data.selectedResolutions) {
+        const countEl = document.getElementById('res-active-count');
+        const defEl = document.getElementById('res-active-default');
+        if (countEl) countEl.innerText = data.selectedResolutions.length;
+        if (defEl) defEl.innerText = data.defaultResolution || '-';
+        window.lastResData = data;
+        renderResolutionList();
+      }
 
       // Telemetry
       document.getElementById('txt-fps-pill').innerText = data.measuredFps.toFixed(1) + ' FPS';

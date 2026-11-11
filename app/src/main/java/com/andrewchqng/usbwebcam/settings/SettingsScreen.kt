@@ -6,6 +6,9 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -60,6 +63,7 @@ fun SettingsPage() {
             title = stringResource(R.string.uvc_gadget_header),
         ) {
             AppSettings.UvcResolutionProfilePreference()
+            AppSettings.UvcManageResolutionsPreference()
             AppSettings.UvcExposedFormatsPreference()
             AppSettings.UvcMaxPacketPreference()
             AppSettings.UvcMaxBurstPreference()
@@ -212,9 +216,42 @@ private object AppSettings {
             enabled = enabled,
             selected = selected,
             onPreferenceClicked = { opt ->
-                settingsViewModel.setPreference(AppPreference.UvcResolutionProfilePref, opt)
+                settingsViewModel.selectResolutionProfile(opt)
             }
         )
+    }
+
+    @Composable
+    fun UvcManageResolutionsPreference(
+        enabled: Boolean = true,
+        settingsViewModel: SettingsViewModel = viewModel()
+    ) {
+        val preferencesState by settingsViewModel.userPreferencesFlow.collectAsState()
+        var showDialog by remember { mutableStateOf(false) }
+
+        OnClickPreference(
+            title = "Manage Exposed Resolution Set",
+            summary = "${preferencesState.selectedResolutions.size} active formats • Default: ${preferencesState.defaultResolution}",
+            enabled = enabled,
+            onClick = { showDialog = true }
+        )
+
+        if (showDialog) {
+            val discoveredResolutions = remember { settingsViewModel.getDiscoveredResolutions() }
+            ResolutionManagerDialog(
+                availableResolutions = discoveredResolutions,
+                selectedResolutions = preferencesState.selectedResolutions,
+                defaultResolution = preferencesState.defaultResolution,
+                customResolutions = preferencesState.customResolutions,
+                currentProfile = preferencesState.uvcResolutionProfileOption,
+                onSelectProfile = { settingsViewModel.selectResolutionProfile(it) },
+                onToggleResolution = { key, sel -> settingsViewModel.toggleResolution(key, sel) },
+                onSetDefaultResolution = { key -> settingsViewModel.setDefaultResolution(key) },
+                onAddCustomResolution = { w, h -> settingsViewModel.addCustomResolution(w, h) },
+                onRemoveCustomResolution = { key -> settingsViewModel.removeCustomResolution(key) },
+                onDismissRequest = { showDialog = false }
+            )
+        }
     }
 
     @Composable

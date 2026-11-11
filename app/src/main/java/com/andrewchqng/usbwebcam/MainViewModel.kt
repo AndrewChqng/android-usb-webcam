@@ -1,6 +1,8 @@
 package com.andrewchqng.usbwebcam
 
 import android.app.Application
+import android.content.Context
+import android.hardware.camera2.CameraManager
 import android.view.Surface
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -13,6 +15,7 @@ import com.andrewchqng.usbwebcam.hid_utils.DevicePath
 import com.andrewchqng.usbwebcam.hid_utils.ModifiesStateDirectly
 import com.andrewchqng.usbwebcam.settings.AppPreference
 import com.andrewchqng.usbwebcam.settings.GadgetUserPreferences
+import com.andrewchqng.usbwebcam.settings.ResolutionItem
 import com.andrewchqng.usbwebcam.settings.UvcResolutionProfileOption
 import com.andrewchqng.usbwebcam.settings.UserPreferencesRepository
 import com.andrewchqng.usbwebcam.shell_utils.RootStateHolder
@@ -131,7 +134,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setResolutionProfile(profile: UvcResolutionProfileOption) {
-        userPreferencesRepository.setPreference(AppPreference.UvcResolutionProfilePref, profile)
+        userPreferencesRepository.selectResolutionProfile(profile)
+    }
+
+    fun toggleResolution(resKey: String, isSelected: Boolean) {
+        userPreferencesRepository.toggleResolution(resKey, isSelected)
+    }
+
+    fun setDefaultResolution(resKey: String) {
+        userPreferencesRepository.setDefaultResolution(resKey)
+    }
+
+    fun addCustomResolution(width: Int, height: Int): Boolean {
+        return userPreferencesRepository.addCustomResolution(width, height)
+    }
+
+    fun removeCustomResolution(resKey: String) {
+        userPreferencesRepository.removeCustomResolution(resKey)
+    }
+
+    fun getDiscoveredResolutions(): List<ResolutionItem> {
+        val app = getApplication<Application>()
+        val camManager = app.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
+        val discovered = if (camManager != null) {
+            ResolutionItem.discoverSensorResolutions(camManager)
+        } else {
+            ResolutionItem.BASELINE_RESOLUTIONS
+        }.toMutableSet()
+
+        val customKeys = userPreferencesStateFlow.value.customResolutions
+        for (k in customKeys) {
+            ResolutionItem.fromKey(k, isCustom = true)?.let { discovered.add(it) }
+        }
+
+        return discovered.sorted()
     }
 
     @OptIn(ModifiesStateDirectly::class)

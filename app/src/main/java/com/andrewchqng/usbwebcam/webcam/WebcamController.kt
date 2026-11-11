@@ -20,6 +20,7 @@ import android.util.Range
 import android.util.Size
 import android.view.Surface
 import com.andrewchqng.usbwebcam.hid_utils.CharacterDeviceManager
+import com.andrewchqng.usbwebcam.settings.GadgetUserPreferences
 import com.andrewchqng.usbwebcam.settings.UvcExposedFormatsOption
 import com.andrewchqng.usbwebcam.settings.UserPreferencesRepository
 import kotlinx.coroutines.CoroutineScope
@@ -208,19 +209,20 @@ class WebcamController private constructor(private val application: Application)
     fun startUvcSession(videoDevicePath: String, maxPayloadSize: Int = 3072): Boolean {
         stopUvcSession()
 
-        val isYuyvOnly = try {
-            UserPreferencesRepository.getInstance(application).userPreferencesFlow.value.uvcExposedFormatsOption == UvcExposedFormatsOption.YuyvOnly
-        } catch (_: Exception) {
-            false
-        }
+        val userPrefs = UserPreferencesRepository.getInstance(application).userPreferencesFlow.value
+        val gadgetPrefs = GadgetUserPreferences.fromUserPreferences(userPrefs)
+        val isYuyvOnly = userPrefs.uvcExposedFormatsOption == UvcExposedFormatsOption.YuyvOnly
+        val resProfileId = userPrefs.uvcResolutionProfileOption.profileId
 
-        val resProfileId = try {
-            UserPreferencesRepository.getInstance(application).userPreferencesFlow.value.uvcResolutionProfileOption.profileId
-        } catch (_: Exception) {
-            0
-        }
-
-        val fdOrErr = UvcNative.nativeOpen(videoDevicePath, maxPayloadSize, isYuyvOnly, resProfileId)
+        val fdOrErr = UvcNative.nativeOpen(
+            videoDevicePath,
+            maxPayloadSize,
+            isYuyvOnly,
+            resProfileId,
+            gadgetPrefs.resolvedWidths,
+            gadgetPrefs.resolvedHeights,
+            gadgetPrefs.defaultFrameIndex
+        )
         if (fdOrErr < 0) {
             val errMsg = "Failed to open $videoDevicePath (errno=${-fdOrErr})"
             Timber.e(errMsg)
@@ -533,20 +535,26 @@ class WebcamController private constructor(private val application: Application)
             val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             val sizes = map?.getOutputSizes(ImageFormat.YUV_420_888) ?: return Size(targetW, targetH)
 
+            val reqW = maxOf(targetW, targetH)
+            val reqH = minOf(targetW, targetH)
+
+            // Direct match first (either direct orientation or rotated)
+            sizes.firstOrNull { (it.width == targetW && it.height == targetH) || (it.width == reqW && it.height == reqH) }?.let { return it }
+
             // Match 4K UHD or 1440p QHD if requested, otherwise prefer 1080p for PTZ headroom
-            if (targetW >= 3840 && targetH >= 2160) {
+            if (reqW >= 3840 && reqH >= 2160) {
                 sizes.firstOrNull { it.width == 3840 && it.height == 2160 }?.let { return it }
-            } else if (targetW >= 2560 && targetH >= 1440) {
+            } else if (reqW >= 2560 && reqH >= 1440) {
                 sizes.firstOrNull { it.width == 2560 && it.height == 1440 }?.let { return it }
                     ?: sizes.firstOrNull { it.width == 3840 && it.height == 2160 }?.let { return it }
-            } else if (targetW <= 1920 && targetH <= 1080) {
+            } else if (reqW <= 1920 && reqH <= 1080) {
                 sizes.firstOrNull { it.width == 1920 && it.height == 1080 }?.let { return it }
             }
 
-            // Otherwise closest matching resolution >= target size
-            sizes.filter { it.width >= targetW && it.height >= targetH }
-                .minByOrNull { (it.width - targetW) + (it.height - targetH) }
-                ?: sizes.minByOrNull { abs(it.width - targetW) + abs(it.height - targetH) }
+            // Otherwise closest matching resolution >= requested size
+            sizes.filter { it.width >= reqW && it.height >= reqH }
+                .minByOrNull { (it.width - reqW) + (it.height - reqH) }
+                ?: sizes.minByOrNull { abs(it.width - reqW) + abs(it.height - reqH) }
                 ?: Size(targetW, targetH)
         }.getOrDefault(Size(targetW, targetH))
     }

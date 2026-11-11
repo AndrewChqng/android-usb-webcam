@@ -16,7 +16,10 @@ object UvcNative {
         devicePath: String,
         maxPayloadSize: Int = 1024,
         isYuyvOnly: Boolean = false,
-        resolutionProfile: Int = 0
+        resolutionProfile: Int = 0,
+        widths: IntArray? = null,
+        heights: IntArray? = null,
+        defaultFrameIndex: Int = 1
     ): Int
     external fun nativeRunEventLoop(callback: UvcEventCallback)
     external fun nativeClose()

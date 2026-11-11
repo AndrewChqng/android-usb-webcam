@@ -111,4 +111,6 @@
     <string name="uvc_res_only_1080p">Only 1080p FHD (Forced 1080p, Prevents Host Downscaling)</string>
     <string name="uvc_res_only_720p">Only 720p HD (Forced 720p)</string>
     <string name="uvc_res_only_4k">Only 4K UHD (Forced 3840x2160)</string>
+    <string name="uvc_res_portrait_9_16">Vertical 9:16 (1080x1920, 720x1280 - Shorts / Reels)</string>
+    <string name="uvc_res_custom">Custom Ticked Set</string>
 </resources>
