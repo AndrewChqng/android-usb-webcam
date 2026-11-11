@@ -224,6 +224,15 @@ cd android-usb-webcam
 
 ---
 
+## 📖 Documentation & Releases
+
+- **[Changelog](CHANGELOG.md)**: Full release notes, test milestone tracking, and version history.
+- **[Technical Learnings & Kernel Quirks](learnings.md)**: Deep dive into Linux ConfigFS ordering, Qualcomm DWC3 threaded IRQ scheduling/affinity, and V4L2 zero-tear buffer synchronization.
+- **[Agent & Maintainer Guide](agent.md)**: Architecture map, operational invariants, and porting procedures.
+- **[GitHub Releases](https://github.com/AndrewChqng/android-usb-webcam/releases)**: Pre-compiled standalone APK downloads.
+
+---
+
 ## 📜 Credits & Disclaimer
 
 - **Base Architecture & UI Framework**: Based on [`Arian04/android-hid-client`](https://github.com/Arian04/android-hid-client) (GPL-3.0).
