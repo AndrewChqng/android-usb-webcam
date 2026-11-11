@@ -163,8 +163,8 @@ class CharacterDeviceManager private constructor(private val application: Applic
             ) to 4
         }
 
-        val mjpegFramesScript = generateFrameCommands("UVC/streaming/mjpeg/m", mjpegFrames, mjpegDefaultIdx)
-        val yuyvFramesScript = generateFrameCommands("UVC/streaming/uncompressed/u", yuyvFrames, yuyvDefaultIdx)
+        val mjpegFramesScript = generateFrameCommands("streaming/mjpeg/m", mjpegFrames, mjpegDefaultIdx)
+        val yuyvFramesScript = generateFrameCommands("streaming/uncompressed/u", yuyvFrames, yuyvDefaultIdx)
 
         val script = """
             G="$gPath"
@@ -573,10 +573,10 @@ $yuyvFramesScript
             defaultInterval = 2000000L, intervals = listOf(2000000L)
         )
 
-        private fun generateFrameCommands(basePathVar: String, frames: List<UvcFrameConfig>, defaultFrameIndex: Int): String {
+        private fun generateFrameCommands(formatSubpath: String, frames: List<UvcFrameConfig>, defaultFrameIndex: Int): String {
             return buildString {
                 for (f in frames) {
-                    val p = "\${$basePathVar}/${f.dirName}"
+                    val p = "\${UVC}/$formatSubpath/${f.dirName}"
                     val intervalsFormatted = f.intervals.joinToString("""\n""") + """\n"""
                     appendLine("            mkdir -p \"$p\"")
                     appendLine("            echo ${f.width} > \"$p/wWidth\"")
@@ -587,7 +587,7 @@ $yuyvFramesScript
                     appendLine("            echo ${f.defaultInterval} > \"$p/dwDefaultFrameInterval\"")
                     appendLine("            printf \"$intervalsFormatted\" > \"$p/dwFrameInterval\"")
                 }
-                appendLine("            echo $defaultFrameIndex > \"\${$basePathVar}/bDefaultFrameIndex\" 2>/dev/null || true")
+                appendLine("            echo $defaultFrameIndex > \"\${UVC}/$formatSubpath/bDefaultFrameIndex\" 2>/dev/null || true")
             }
         }
 
