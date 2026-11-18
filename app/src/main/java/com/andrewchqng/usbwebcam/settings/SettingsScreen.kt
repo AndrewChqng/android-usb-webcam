@@ -249,6 +249,8 @@ private object AppSettings {
                 onSetDefaultResolution = { key -> settingsViewModel.setDefaultResolution(key) },
                 onAddCustomResolution = { w, h -> settingsViewModel.addCustomResolution(w, h) },
                 onRemoveCustomResolution = { key -> settingsViewModel.removeCustomResolution(key) },
+                onSelectAll = { keys -> settingsViewModel.selectAllResolutions(keys) },
+                onDeselectAll = { keys -> settingsViewModel.deselectAllResolutions(keys) },
                 onDismissRequest = { showDialog = false }
             )
         }

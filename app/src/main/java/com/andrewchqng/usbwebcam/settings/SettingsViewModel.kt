@@ -27,6 +27,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun setDefaultResolution(resKey: String) =
         userPreferencesRepository.setDefaultResolution(resKey)
 
+    fun selectAllResolutions(keys: List<String>) =
+        userPreferencesRepository.selectAllResolutions(keys)
+
+    fun deselectAllResolutions(keysToRemove: List<String>) =
+        userPreferencesRepository.deselectAllResolutions(keysToRemove)
+
     fun addCustomResolution(width: Int, height: Int): Boolean =
         userPreferencesRepository.addCustomResolution(width, height)
 

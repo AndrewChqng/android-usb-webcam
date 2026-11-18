@@ -437,12 +437,18 @@ fun MainPage(
                 onSetDefaultResolution = { key -> mainViewModel.setDefaultResolution(key) },
                 onAddCustomResolution = { w, h -> mainViewModel.addCustomResolution(w, h) },
                 onRemoveCustomResolution = { key -> mainViewModel.removeCustomResolution(key) },
+                onSelectAll = { keys -> mainViewModel.selectAllResolutions(keys) },
+                onDeselectAll = { keys -> mainViewModel.deselectAllResolutions(keys) },
                 onDismissRequest = { showResolutionDialog = false }
             )
         }
 
         // Resolution Profile Selection Card
         Card(modifier = Modifier.fillMaxWidth()) {
+            val currentProfile = userPreferences.uvcResolutionProfileOption
+            val tiers = UvcResolutionProfileOption.maxTiers
+            val tierIdx = tiers.indexOf(currentProfile).let { if (it >= 0) it else 5 }
+
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -456,7 +462,11 @@ fun MainPage(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Exposed Resolution Profile",
+                            text = if (currentProfile == UvcResolutionProfileOption.Custom) {
+                                "Exposed Resolutions (Custom Set)"
+                            } else {
+                                "Max Resolution: ${currentProfile.shortLabel}"
+                            },
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold
                         )
@@ -470,7 +480,7 @@ fun MainPage(
                         onClick = { showResolutionDialog = true },
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                     ) {
-                        Text("Customize", style = MaterialTheme.typography.labelMedium)
+                        Text("Custom", style = MaterialTheme.typography.labelMedium)
                     }
                 }
 
@@ -482,27 +492,26 @@ fun MainPage(
                     )
                 }
 
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                Slider(
+                    value = tierIdx.toFloat(),
+                    onValueChange = { value ->
+                        val snapped = value.roundToInt().coerceIn(0, tiers.lastIndex)
+                        mainViewModel.setResolutionProfile(tiers[snapped])
+                    },
+                    valueRange = 0f..tiers.lastIndex.toFloat(),
+                    steps = tiers.size - 2
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    val currentProfile = userPreferences.uvcResolutionProfileOption
-                    for (opt in UvcResolutionProfileOption.values) {
-                        val label = when (opt) {
-                            UvcResolutionProfileOption.Max1080p -> "Max 1080p"
-                            UvcResolutionProfileOption.Max1440p -> "Max 1440p 2K"
-                            UvcResolutionProfileOption.Max4K -> "Max 4K UHD"
-                            UvcResolutionProfileOption.Max720p -> "Max 720p HD"
-                            UvcResolutionProfileOption.Portrait916 -> "Vertical (9:16)"
-                            UvcResolutionProfileOption.Only1080p -> "Only 1080p (Forced)"
-                            UvcResolutionProfileOption.Only720p -> "Only 720p (Forced)"
-                            UvcResolutionProfileOption.Only4K -> "Only 4K (Forced)"
-                            UvcResolutionProfileOption.Custom -> "Custom Set"
-                        }
-                        FilterChip(
-                            selected = currentProfile == opt,
-                            onClick = { mainViewModel.setResolutionProfile(opt) },
-                            label = { Text(label) }
+                    for (t in tiers) {
+                        Text(
+                            text = if (t == UvcResolutionProfileOption.Max4K) "4K" else t.shortLabel.removeSuffix("p"),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = if (currentProfile == t) FontWeight.Bold else FontWeight.Normal,
+                            color = if (currentProfile == t) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }

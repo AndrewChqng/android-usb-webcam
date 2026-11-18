@@ -152,23 +152,37 @@ sealed class UvcExposedFormatsOption(key: String, @StringRes id: Int) : SealedSt
     }
 }
 
-sealed class UvcResolutionProfileOption(key: String, @StringRes id: Int, val profileId: Int) : SealedString(key, id) {
-    data object Max1080p : UvcResolutionProfileOption("max_1080p", R.string.uvc_res_max_1080p, 0)
-    data object Max1440p : UvcResolutionProfileOption("max_1440p", R.string.uvc_res_max_1440p, 1)
-    data object Max4K : UvcResolutionProfileOption("max_4k", R.string.uvc_res_max_4k, 2)
-    data object Max720p : UvcResolutionProfileOption("max_720p", R.string.uvc_res_max_720p, 3)
-    data object Portrait916 : UvcResolutionProfileOption("portrait_9_16", R.string.uvc_res_portrait_9_16, 7)
-    data object Only1080p : UvcResolutionProfileOption("only_1080p", R.string.uvc_res_only_1080p, 4)
-    data object Only720p : UvcResolutionProfileOption("only_720p", R.string.uvc_res_only_720p, 5)
-    data object Only4K : UvcResolutionProfileOption("only_4k", R.string.uvc_res_only_4k, 6)
-    data object Custom : UvcResolutionProfileOption("custom", R.string.uvc_res_custom, 8)
+sealed class UvcResolutionProfileOption(
+    key: String,
+    @StringRes id: Int,
+    val profileId: Int,
+    val shortLabel: String
+) : SealedString(key, id) {
+    data object Max144p : UvcResolutionProfileOption("max_144p", R.string.uvc_res_max_144p, 9, "144p")
+    data object Max240p : UvcResolutionProfileOption("max_240p", R.string.uvc_res_max_240p, 10, "240p")
+    data object Max360p : UvcResolutionProfileOption("max_360p", R.string.uvc_res_max_360p, 11, "360p")
+    data object Max480p : UvcResolutionProfileOption("max_480p", R.string.uvc_res_max_480p, 12, "480p")
+    data object Max720p : UvcResolutionProfileOption("max_720p", R.string.uvc_res_max_720p, 3, "720p")
+    data object Max1080p : UvcResolutionProfileOption("max_1080p", R.string.uvc_res_max_1080p, 0, "1080p")
+    data object Max1440p : UvcResolutionProfileOption("max_1440p", R.string.uvc_res_max_1440p, 1, "1440p")
+    data object Max4K : UvcResolutionProfileOption("max_4k", R.string.uvc_res_max_4k, 2, "2160p")
+    data object Custom : UvcResolutionProfileOption("custom", R.string.uvc_res_custom, 8, "Custom")
 
     companion object {
+        val maxTiers: List<UvcResolutionProfileOption>
+            get() = listOf(Max144p, Max240p, Max360p, Max480p, Max720p, Max1080p, Max1440p, Max4K)
+
         val values: List<UvcResolutionProfileOption>
-            get() = listOf(Max1080p, Max1440p, Max4K, Max720p, Portrait916, Only1080p, Only720p, Only4K, Custom)
+            get() = maxTiers + Custom
 
         fun fromKey(key: String): UvcResolutionProfileOption {
-            return values.firstOrNull { it.key == key } ?: Max1080p
+            return when (key) {
+                "only_1080p" -> Max1080p
+                "only_720p" -> Max720p
+                "only_4k" -> Max4K
+                "portrait_9_16" -> Custom
+                else -> values.firstOrNull { it.key == key } ?: Max1080p
+            }
         }
     }
 }
@@ -437,6 +451,36 @@ class UserPreferencesRepository private constructor(application: Application) {
         current.add(resKey)
         setPreference(AppPreference.SelectedResolutionsPref, current)
         setPreference(AppPreference.DefaultResolutionPref, resKey)
+    }
+
+    fun selectAllResolutions(keys: List<String>) {
+        val current = getPreference(AppPreference.SelectedResolutionsPref).toMutableSet()
+        for (k in keys) {
+            if (current.size >= 16) break
+            current.add(k)
+        }
+        setPreference(AppPreference.SelectedResolutionsPref, current)
+        setPreference(AppPreference.UvcResolutionProfilePref, UvcResolutionProfileOption.Custom)
+        val defaultRes = getPreference(AppPreference.DefaultResolutionPref)
+        if (!current.contains(defaultRes)) {
+            current.firstOrNull()?.let { setPreference(AppPreference.DefaultResolutionPref, it) }
+        }
+    }
+
+    fun deselectAllResolutions(keysToRemove: List<String>) {
+        val current = getPreference(AppPreference.SelectedResolutionsPref).toMutableSet()
+        val defaultRes = getPreference(AppPreference.DefaultResolutionPref)
+        val removeSet = keysToRemove.toSet()
+        current.removeAll(removeSet)
+        if (current.isEmpty()) {
+            // Keep at least 1 valid resolution so UVC ConfigFS always has a frame descriptor
+            current.add(if (defaultRes.isNotBlank()) defaultRes else "1920x1080")
+        }
+        setPreference(AppPreference.SelectedResolutionsPref, current)
+        setPreference(AppPreference.UvcResolutionProfilePref, UvcResolutionProfileOption.Custom)
+        if (!current.contains(defaultRes)) {
+            current.firstOrNull()?.let { setPreference(AppPreference.DefaultResolutionPref, it) }
+        }
     }
 
     fun addCustomResolution(width: Int, height: Int): Boolean {

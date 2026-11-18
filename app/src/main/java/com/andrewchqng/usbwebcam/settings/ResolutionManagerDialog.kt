@@ -24,12 +24,13 @@ import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.Divider
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -43,6 +44,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -57,6 +59,8 @@ fun ResolutionManagerDialog(
     onSetDefaultResolution: (String) -> Unit,
     onAddCustomResolution: (Int, Int) -> Boolean,
     onRemoveCustomResolution: (String) -> Unit,
+    onSelectAll: (List<String>) -> Unit,
+    onDeselectAll: (List<String>) -> Unit,
     onDismissRequest: () -> Unit
 ) {
     var selectedAspectFilter by remember { mutableStateOf("All") }
@@ -107,40 +111,54 @@ fun ResolutionManagerDialog(
                     .fillMaxWidth()
                     .heightIn(max = 500.dp)
             ) {
-                // Section 1: Presets
-                Text(
-                    text = "Preset Profiles",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                FlowRow(
+                // Section 1: Discrete Max Resolution Slider
+                val tiers = UvcResolutionProfileOption.maxTiers
+                val tierIdx = tiers.indexOf(currentProfile).let { if (it >= 0) it else 5 } // Default visual position 1080p when Custom
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    for (opt in UvcResolutionProfileOption.values) {
-                        val label = when (opt) {
-                            UvcResolutionProfileOption.Max1080p -> "Max 1080p"
-                            UvcResolutionProfileOption.Max1440p -> "Max 1440p"
-                            UvcResolutionProfileOption.Max4K -> "Max 4K"
-                            UvcResolutionProfileOption.Max720p -> "Max 720p"
-                            UvcResolutionProfileOption.Portrait916 -> "9:16 Vertical"
-                            UvcResolutionProfileOption.Only1080p -> "Forced 1080p"
-                            UvcResolutionProfileOption.Only720p -> "Forced 720p"
-                            UvcResolutionProfileOption.Only4K -> "Forced 4K"
-                            UvcResolutionProfileOption.Custom -> "Custom"
-                        }
-                        FilterChip(
-                            selected = currentProfile == opt,
-                            onClick = { onSelectProfile(opt) },
-                            label = { Text(label, style = MaterialTheme.typography.labelSmall) }
+                    Text(
+                        text = if (currentProfile == UvcResolutionProfileOption.Custom) {
+                            "Max Resolution: Custom Set"
+                        } else {
+                            "Max Resolution: ${currentProfile.shortLabel}"
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "144p – 2160p",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Slider(
+                    value = tierIdx.toFloat(),
+                    onValueChange = { value ->
+                        val snapped = value.roundToInt().coerceIn(0, tiers.lastIndex)
+                        onSelectProfile(tiers[snapped])
+                    },
+                    valueRange = 0f..tiers.lastIndex.toFloat(),
+                    steps = tiers.size - 2
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    for (t in tiers) {
+                        Text(
+                            text = if (t == UvcResolutionProfileOption.Max4K) "4K" else t.shortLabel.removeSuffix("p"),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = if (currentProfile == t) FontWeight.Bold else FontWeight.Normal,
+                            color = if (currentProfile == t) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
-                Divider()
+                HorizontalDivider()
                 Spacer(modifier = Modifier.height(8.dp))
 
                 // Section 2: Aspect Ratio filter chips
@@ -236,14 +254,25 @@ fun ResolutionManagerDialog(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Sensor Resolutions (${filteredItems.size})",
+                            text = "Resolutions (${filteredItems.size})",
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.SemiBold
                         )
-                        TextButton(onClick = { showCustomInput = true }) {
-                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Custom", style = MaterialTheme.typography.labelSmall)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(
+                                onClick = { onSelectAll(filteredItems.map { it.key }) }
+                            ) {
+                                Text("Select All", style = MaterialTheme.typography.labelSmall)
+                            }
+                            TextButton(
+                                onClick = { onDeselectAll(filteredItems.map { it.key }) }
+                            ) {
+                                Text("Deselect All", style = MaterialTheme.typography.labelSmall)
+                            }
+                            TextButton(onClick = { showCustomInput = true }) {
+                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Text("Add", style = MaterialTheme.typography.labelSmall)
+                            }
                         }
                     }
                 }

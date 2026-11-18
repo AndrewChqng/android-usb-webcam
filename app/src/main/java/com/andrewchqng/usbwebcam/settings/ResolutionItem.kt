@@ -129,63 +129,23 @@ data class ResolutionItem(
             return found.sorted()
         }
 
+        private val COMMON_TIERS: List<Pair<String, ResolutionItem>> = listOf(
+            "max_144p" to ResolutionItem(176, 144),
+            "max_240p" to ResolutionItem(320, 240),
+            "max_360p" to ResolutionItem(640, 360),
+            "max_480p" to ResolutionItem(640, 480),
+            "max_720p" to ResolutionItem(1280, 720),
+            "max_1080p" to ResolutionItem(1920, 1080),
+            "max_1440p" to ResolutionItem(2560, 1440),
+            "max_4k" to ResolutionItem(3840, 2160)
+        )
+
         fun getPresetResolutions(presetKey: String): Pair<List<ResolutionItem>, ResolutionItem> {
-            return when (presetKey) {
-                "max_4k" -> listOf(
-                    ResolutionItem(3840, 2160),
-                    ResolutionItem(2560, 1440),
-                    ResolutionItem(1920, 1080),
-                    ResolutionItem(1280, 720),
-                    ResolutionItem(640, 480),
-                    ResolutionItem(640, 360)
-                ) to ResolutionItem(3840, 2160)
-
-                "max_1440p" -> listOf(
-                    ResolutionItem(2560, 1440),
-                    ResolutionItem(1920, 1080),
-                    ResolutionItem(1280, 720),
-                    ResolutionItem(640, 480),
-                    ResolutionItem(640, 360)
-                ) to ResolutionItem(2560, 1440)
-
-                "max_720p" -> listOf(
-                    ResolutionItem(1280, 720),
-                    ResolutionItem(640, 480),
-                    ResolutionItem(640, 360)
-                ) to ResolutionItem(1280, 720)
-
-                "portrait_9_16" -> listOf(
-                    ResolutionItem(1080, 1920),
-                    ResolutionItem(720, 1280),
-                    ResolutionItem(1440, 2560)
-                ) to ResolutionItem(1080, 1920)
-
-                "only_1080p" -> listOf(
-                    ResolutionItem(1920, 1080)
-                ) to ResolutionItem(1920, 1080)
-
-                "only_720p" -> listOf(
-                    ResolutionItem(1280, 720)
-                ) to ResolutionItem(1280, 720)
-
-                "only_4k" -> listOf(
-                    ResolutionItem(3840, 2160)
-                ) to ResolutionItem(3840, 2160)
-
-                "max_1080p" -> listOf(
-                    ResolutionItem(1920, 1080),
-                    ResolutionItem(1280, 720),
-                    ResolutionItem(640, 480),
-                    ResolutionItem(640, 360)
-                ) to ResolutionItem(1920, 1080)
-
-                else -> listOf(
-                    ResolutionItem(1920, 1080),
-                    ResolutionItem(1280, 720),
-                    ResolutionItem(640, 480),
-                    ResolutionItem(640, 360)
-                ) to ResolutionItem(1920, 1080)
-            }
+            val tierIdx = COMMON_TIERS.indexOfFirst { it.first == presetKey }
+            val resolvedIdx = if (tierIdx >= 0) tierIdx else 5 // Default to max_1080p
+            val items = COMMON_TIERS.take(resolvedIdx + 1).map { it.second }.reversed()
+            val defaultItem = COMMON_TIERS[resolvedIdx].second
+            return items to defaultItem
         }
     }
 }

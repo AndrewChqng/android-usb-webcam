@@ -103,14 +103,14 @@
     <string name="uvc_format_yuyv_only">YUYV Only (Uncompressed Raw, High Bandwidth)</string>
 
     <!-- Resolution Profiles -->
-    <string name="uvc_resolution_profile_title">Exposed Resolutions</string>
-    <string name="uvc_res_max_1080p">Max 1080p FHD (1080p, 720p, 480p, 360p - Recommended)</string>
-    <string name="uvc_res_max_1440p">Max 1440p 2K (1440p, 1080p, 720p, 480p, 360p)</string>
-    <string name="uvc_res_max_4k">Max 4K UHD (4K, 1440p, 1080p, 720p, 480p, 360p)</string>
-    <string name="uvc_res_max_720p">Max 720p HD (720p, 480p, 360p - Low Power)</string>
-    <string name="uvc_res_only_1080p">Only 1080p FHD (Forced 1080p, Prevents Host Downscaling)</string>
-    <string name="uvc_res_only_720p">Only 720p HD (Forced 720p)</string>
-    <string name="uvc_res_only_4k">Only 4K UHD (Forced 3840x2160)</string>
-    <string name="uvc_res_portrait_9_16">Vertical 9:16 (1080x1920, 720x1280 - Shorts / Reels)</string>
-    <string name="uvc_res_custom">Custom Ticked Set</string>
+    <string name="uvc_resolution_profile_title">Max Resolution</string>
+    <string name="uvc_res_max_144p">Max 144p QCIF (176x144)</string>
+    <string name="uvc_res_max_240p">Max 240p QVGA (up to 320x240)</string>
+    <string name="uvc_res_max_360p">Max 360p nHD (up to 640x360)</string>
+    <string name="uvc_res_max_480p">Max 480p SD (up to 640x480)</string>
+    <string name="uvc_res_max_720p">Max 720p HD (up to 1280x720)</string>
+    <string name="uvc_res_max_1080p">Max 1080p FHD (up to 1920x1080 — Recommended)</string>
+    <string name="uvc_res_max_1440p">Max 1440p 2K (up to 2560x1440)</string>
+    <string name="uvc_res_max_4k">Max 2160p 4K UHD (up to 3840x2160)</string>
+    <string name="uvc_res_custom">Custom Resolution Set</string>
 </resources>

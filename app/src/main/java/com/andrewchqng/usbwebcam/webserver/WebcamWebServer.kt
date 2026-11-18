@@ -407,6 +407,20 @@ class WebcamWebServer private constructor(private val application: Application) 
                     UserPreferencesRepository.getInstance(application).removeCustomResolution(res)
                 }
             }
+            "selectAllResolutions" -> {
+                val arr = json.optJSONArray("resolutions")
+                if (arr != null) {
+                    val keys = (0 until arr.length()).mapNotNull { arr.optString(it).takeIf { s -> s.isNotEmpty() } }
+                    UserPreferencesRepository.getInstance(application).selectAllResolutions(keys)
+                }
+            }
+            "deselectAllResolutions" -> {
+                val arr = json.optJSONArray("resolutions")
+                if (arr != null) {
+                    val keys = (0 until arr.length()).mapNotNull { arr.optString(it).takeIf { s -> s.isNotEmpty() } }
+                    UserPreferencesRepository.getInstance(application).deselectAllResolutions(keys)
+                }
+            }
         }
     }
 
@@ -733,35 +747,34 @@ class WebcamWebServer private constructor(private val application: Application) 
 
         <div class="control-group">
           <div class="control-header">
-            <span>Exposed Resolution Profile</span>
+            <span id="lbl-res-profile">Max Resolution: 1080p</span>
             <span id="lbl-res-info" style="font-size: 11px; color: var(--text-muted);">(Click Restart to apply)</span>
           </div>
-          <div class="btn-row" id="res-profile-container">
-            <button class="pill-btn" id="res-max_1080p" onclick="setResProfile('max_1080p')">Max 1080p</button>
-            <button class="pill-btn" id="res-max_1440p" onclick="setResProfile('max_1440p')">Max 1440p 2K</button>
-            <button class="pill-btn" id="res-max_4k" onclick="setResProfile('max_4k')">Max 4K UHD</button>
-            <button class="pill-btn" id="res-max_720p" onclick="setResProfile('max_720p')">Max 720p</button>
-            <button class="pill-btn" id="res-portrait_9_16" onclick="setResProfile('portrait_9_16')">Vertical 9:16</button>
-            <button class="pill-btn" id="res-only_1080p" onclick="setResProfile('only_1080p')">Only 1080p</button>
-            <button class="pill-btn" id="res-only_720p" onclick="setResProfile('only_720p')">Only 720p</button>
-            <button class="pill-btn" id="res-only_4k" onclick="setResProfile('only_4k')">Only 4K</button>
-            <button class="pill-btn" id="res-custom" onclick="setResProfile('custom')">Custom Set</button>
+          <input type="range" id="rng-max-res" min="0" max="7" step="1" value="5" onchange="onMaxResSlider(this.value)" oninput="onMaxResPreview(this.value)">
+          <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); margin-top: 2px;">
+            <span>144</span><span>240</span><span>360</span><span>480</span><span>720</span><span>1080</span><span>1440</span><span>4K</span>
           </div>
           <details style="margin-top: 8px; font-size: 13px;">
             <summary style="cursor: pointer; color: var(--accent); font-weight: 500;">
-              Manage Resolution Set (<span id="res-active-count">0</span> active, Default: <span id="res-active-default">-</span>)
+              Manage Custom Set (<span id="res-active-count">0</span> active, Default: <span id="res-active-default">-</span>)
             </summary>
             <div style="margin-top: 8px; padding: 10px; background: rgba(255,255,255,0.03); border-radius: 8px;">
-              <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
-                <label style="font-size: 11px; color: var(--text-muted);">Aspect Ratio Filter:</label>
-                <select id="sel-aspect-filter" onchange="renderResolutionList()" style="background: var(--bg-card); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px;">
-                  <option value="All">All</option>
-                  <option value="16:9">16:9 (Landscape)</option>
-                  <option value="9:16">9:16 (Vertical)</option>
-                  <option value="4:3">4:3 (Photo)</option>
-                  <option value="1:1">1:1 (Square)</option>
-                  <option value="Other">Other</option>
-                </select>
+              <div style="display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 8px;">
+                <div style="display: flex; gap: 6px; align-items: center;">
+                  <label style="font-size: 11px; color: var(--text-muted);">Aspect Ratio:</label>
+                  <select id="sel-aspect-filter" onchange="renderResolutionList()" style="background: var(--bg-card); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; width: auto;">
+                    <option value="All">All</option>
+                    <option value="16:9">16:9</option>
+                    <option value="9:16">9:16</option>
+                    <option value="4:3">4:3</option>
+                    <option value="1:1">1:1</option>
+                    <option value="Other">Other</option>
+                  </select>
+                </div>
+                <div style="display: flex; gap: 6px;">
+                  <button class="pill-btn" onclick="selectAllFilteredRes()" style="padding: 2px 8px; font-size: 11px;">Select All</button>
+                  <button class="pill-btn" onclick="deselectAllFilteredRes()" style="padding: 2px 8px; font-size: 11px;">Deselect All</button>
+                </div>
               </div>
               <div id="resolution-items-list" style="max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px;"></div>
               <div style="display: flex; gap: 6px; align-items: center; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);">
@@ -1025,6 +1038,46 @@ class WebcamWebServer private constructor(private val application: Application) 
       }
     }
 
+    const RES_TIERS = ['max_144p', 'max_240p', 'max_360p', 'max_480p', 'max_720p', 'max_1080p', 'max_1440p', 'max_4k'];
+    const RES_LABELS = ['144p', '240p', '360p', '480p', '720p', '1080p', '1440p', '2160p (4K)'];
+
+    function onMaxResPreview(idx) {
+      const i = Math.max(0, Math.min(RES_TIERS.length - 1, parseInt(idx) || 0));
+      document.getElementById('lbl-res-profile').innerText = 'Max Resolution: ' + RES_LABELS[i];
+    }
+
+    function onMaxResSlider(idx) {
+      const i = Math.max(0, Math.min(RES_TIERS.length - 1, parseInt(idx) || 0));
+      onMaxResPreview(i);
+      setResProfile(RES_TIERS[i]);
+    }
+
+    function getFilteredResolutionItems() {
+      const data = window.lastResData;
+      if (!data || !data.availableResolutions) return [];
+      const filter = document.getElementById('sel-aspect-filter').value;
+      return data.availableResolutions.filter(item => {
+        if (filter === 'All') return true;
+        if (filter === '16:9') return item.aspectRatio === '16:9';
+        if (filter === '9:16') return item.aspectRatio === '9:16';
+        if (filter === '4:3') return item.aspectRatio === '4:3' || item.aspectRatio === '3:4';
+        if (filter === '1:1') return item.aspectRatio === '1:1';
+        return !['16:9', '9:16', '4:3', '3:4', '1:1'].includes(item.aspectRatio);
+      });
+    }
+
+    function selectAllFilteredRes() {
+      const keys = getFilteredResolutionItems().map(i => i.key);
+      postAction('selectAllResolutions', { resolutions: keys });
+      setTimeout(fetchStatus, 150);
+    }
+
+    function deselectAllFilteredRes() {
+      const keys = getFilteredResolutionItems().map(i => i.key);
+      postAction('deselectAllResolutions', { resolutions: keys });
+      setTimeout(fetchStatus, 150);
+    }
+
     function removeCustomRes(key) {
       postAction('removeCustomResolution', { resolution: key });
       setTimeout(fetchStatus, 150);
@@ -1161,11 +1214,16 @@ class WebcamWebServer private constructor(private val application: Application) 
         restartBtn.style.display = data.isUvcLoopRunning ? 'inline-block' : 'none';
       }
 
-      // Resolution profile pills
-      ['max_1080p', 'max_1440p', 'max_4k', 'max_720p', 'portrait_9_16', 'only_1080p', 'only_720p', 'only_4k', 'custom'].forEach(p => {
-        const btn = document.getElementById('res-' + p);
-        if (btn) btn.className = 'pill-btn' + (data.resolutionProfile === p ? ' active' : '');
-      });
+      // Resolution profile slider
+      const tierIdx = RES_TIERS.indexOf(data.resolutionProfile);
+      const rngMaxRes = document.getElementById('rng-max-res');
+      const lblResProfile = document.getElementById('lbl-res-profile');
+      if (tierIdx >= 0) {
+        if (rngMaxRes && !isDragging) rngMaxRes.value = tierIdx;
+        if (lblResProfile) lblResProfile.innerText = 'Max Resolution: ' + RES_LABELS[tierIdx];
+      } else {
+        if (lblResProfile) lblResProfile.innerText = 'Exposed Resolutions: Custom Set';
+      }
 
       // Update resolution set count and default
       if (data.selectedResolutions) {
