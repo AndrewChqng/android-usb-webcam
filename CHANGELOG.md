@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v3.2.1] - 2026-11-18
+
+### Performance & Latency Tuning
+- **Zero-Teardown On-The-Fly Camera2 Updates**: `WebcamController` tracks `activeCameraId` and `activeCaptureSize` and updates `CaptureRequest` on-the-fly (`updateRepeatingRequestOnFly()`) instead of tearing down and reopening the Camera2 session when the same sensor stream is already active, eliminating ~1.5s video blackouts on FPS/stream renegotiation.
+- **Disabled Zero-Shutter-Lag (`CONTROL_ENABLE_ZSL = false`)**: Explicitly disables ZSL reprocessing ring buffers on API 26+ to cut 60–100ms HAL pipeline latency.
+- **Physical OIS over EIS**: Prefers zero-latency physical OIS (`LENS_OPTICAL_STABILIZATION_MODE_ON`) with EIS disabled when stabilization is enabled and supported, avoiding 1–3 frame gyro-warp latency and FOV crop.
+- **Reduced `ImageReader` Queue**: Lowered `ImageReader` buffer count from `4` to `3` alongside `acquireLatestImage()`.
+- **PM QoS DMA Latency Lock**: Acquires `/dev/cpu_dma_latency = 0` on `VIDIOC_STREAMON` (when accessible) and releases it on `VIDIOC_STREAMOFF` to prevent deep CPU C-state wakeup jitter.
+- **MJPEG `sizeimage` Clamp**: Clamps MJPEG V4L2 buffer sizing to `min(rawBytes, max(rawBytes / 2, 2MB))` to reduce locked kernel buffer memory at 1440p/4K.
+
+### ARM64 NEON Vectorization
+- **8×8 NEON Register Tile Transposition (`transpose8x8_u8`)**: Vectorizes 90° and 270° luma rotation in `nativeYuv420ToNv21` using `vtrn_u8`/`vtrn_u16`/`vtrn_u32` (and `vrev64_u8` for 90°) to eliminate column-strided cache misses.
+- **Planar I420 & Stride-2 Semi-Planar NEON Fast Paths**: Added NEON SIMD vectorization for `uvPixelStride == 1` and generic `uvPixelStride == 2` in both `nativePushYuvToYuyvFrame` and `nativeYuv420ToNv21`.
+- **NEON YUYV Startup Fill**: Vectorized initial black YUYV frame priming in `startV4l2StreamingLocked` with 16-byte `vst1q_u8` stores.
+
+---
+
 ## [v3.2.0] - 2026-11-11
 
 ### Added
