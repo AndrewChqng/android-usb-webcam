@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
@@ -13,12 +14,12 @@ android {
 
         // SDK support
         minSdk = 26
-        targetSdk = 33
+        targetSdk = 35
         compileSdk = 36
 
         // App Versioning
-        versionCode = 324
-        versionName = "v3.2.4"
+        versionCode = 325
+        versionName = "v3.2.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -34,12 +35,42 @@ android {
         }
     }
 
+    val keystorePropsFile = rootProject.file("keystore.properties")
+    val keystoreProps = Properties().apply {
+        if (keystorePropsFile.exists()) {
+            keystorePropsFile.inputStream().use { load(it) }
+        }
+    }
+    val releaseStoreFile = keystoreProps.getProperty("storeFile")
+        ?: providers.environmentVariable("ANDROID_KEYSTORE_PATH").orNull
+    val releaseStorePassword = keystoreProps.getProperty("storePassword")
+        ?: providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD").orNull
+    val releaseKeyAlias = keystoreProps.getProperty("keyAlias")
+        ?: providers.environmentVariable("ANDROID_KEY_ALIAS").orNull
+    val releaseKeyPassword = keystoreProps.getProperty("keyPassword")
+        ?: providers.environmentVariable("ANDROID_KEY_PASSWORD").orNull
+
+    signingConfigs {
+        if (!releaseStoreFile.isNullOrBlank() &&
+            !releaseStorePassword.isNullOrBlank() &&
+            !releaseKeyAlias.isNullOrBlank() &&
+            !releaseKeyPassword.isNullOrBlank()
+        ) {
+            create("release") {
+                storeFile = file(releaseStoreFile)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     // Build configuration
     buildTypes {
         getByName("release") {
             isMinifyEnabled = true
             isShrinkResources = true
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -96,7 +127,7 @@ android {
             animationsDisabled = true
             localDevices {
                 val testDevices = arrayOf("Pixel 5")
-                val apiLevelsMissingATD = setOf(26, 27, 28, 29, 34)
+                val apiLevelsMissingATD = setOf(26, 27, 28, 29, 34, 35)
                 val testPrimarySystemImage = "aosp-atd"
                 val testFallbackSystemImage = "aosp"
                 for (thisDevice in testDevices) {
@@ -182,7 +213,6 @@ dependencies {
 
     // Root helper library
     implementation(libs.libsu.core)
-    implementation(libs.libsu.service)
 
     // Navigation
     implementation(libs.voyager.navigator)

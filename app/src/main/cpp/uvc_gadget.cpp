@@ -1,6 +1,5 @@
 #include "uvc_gadget.h"
 
-#include <android/log.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <jni.h>
@@ -16,290 +15,16 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#if defined(__aarch64__) || defined(__ARM_NEON__)
-#include <arm_neon.h>
-
-static inline void transpose8x8_u8(
-    uint8x8_t& r0, uint8x8_t& r1, uint8x8_t& r2, uint8x8_t& r3,
-    uint8x8_t& r4, uint8x8_t& r5, uint8x8_t& r6, uint8x8_t& r7
-) {
-    uint8x8x2_t t0 = vtrn_u8(r0, r1);
-    uint8x8x2_t t1 = vtrn_u8(r2, r3);
-    uint8x8x2_t t2 = vtrn_u8(r4, r5);
-    uint8x8x2_t t3 = vtrn_u8(r6, r7);
-
-    uint16x4x2_t q0 = vtrn_u16(vreinterpret_u16_u8(t0.val[0]), vreinterpret_u16_u8(t1.val[0]));
-    uint16x4x2_t q1 = vtrn_u16(vreinterpret_u16_u8(t0.val[1]), vreinterpret_u16_u8(t1.val[1]));
-    uint16x4x2_t q2 = vtrn_u16(vreinterpret_u16_u8(t2.val[0]), vreinterpret_u16_u8(t3.val[0]));
-    uint16x4x2_t q3 = vtrn_u16(vreinterpret_u16_u8(t2.val[1]), vreinterpret_u16_u8(t3.val[1]));
-
-    uint32x2x2_t d0 = vtrn_u32(vreinterpret_u32_u16(q0.val[0]), vreinterpret_u32_u16(q2.val[0]));
-    uint32x2x2_t d1 = vtrn_u32(vreinterpret_u32_u16(q1.val[0]), vreinterpret_u32_u16(q3.val[0]));
-    uint32x2x2_t d2 = vtrn_u32(vreinterpret_u32_u16(q0.val[1]), vreinterpret_u32_u16(q2.val[1]));
-    uint32x2x2_t d3 = vtrn_u32(vreinterpret_u32_u16(q1.val[1]), vreinterpret_u32_u16(q3.val[1]));
-
-    r0 = vreinterpret_u8_u32(d0.val[0]);
-    r1 = vreinterpret_u8_u32(d1.val[0]);
-    r2 = vreinterpret_u8_u32(d2.val[0]);
-    r3 = vreinterpret_u8_u32(d3.val[0]);
-    r4 = vreinterpret_u8_u32(d0.val[1]);
-    r5 = vreinterpret_u8_u32(d1.val[1]);
-    r6 = vreinterpret_u8_u32(d2.val[1]);
-    r7 = vreinterpret_u8_u32(d3.val[1]);
-}
-#endif
-
 #include <algorithm>
-#include <atomic>
 #include <mutex>
-#include <vector>
-
-#define LOG_TAG "UvcGadgetJNI"
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 namespace {
 
-// Use 6 V4L2 MMAP buffers in a strict circular ring so a dequeued buffer is never
-// overwritten while DWC3 scatter-gather DMA still has trailing USB requests in flight.
-constexpr int kNumV4l2Buffers = 6;
-
-struct MmapBuffer {
-    void* start = nullptr;
-    size_t length = 0;
-    bool queued = false;
-};
-
-struct UvcContext {
-    int v4l2_fd = -1;
-    int stop_efd = -1;
-    int dma_latency_fd = -1;
-    uint32_t max_payload_size = 1024;
-
-    uint8_t current_control = 0; // UVC_VS_PROBE_CONTROL or UVC_VS_COMMIT_CONTROL
-    struct uvc_streaming_control probe_ctrl {};
-    struct uvc_streaming_control commit_ctrl {};
-
-    uint32_t active_fourcc = V4L2_PIX_FMT_MJPEG;
-    uint16_t active_width = 1280;
-    uint16_t active_height = 720;
-    uint32_t active_interval = 333333;
-
-    std::atomic<bool> is_streaming{false};
-    bool is_yuyv_only = false;
-    std::mutex stream_mutex;
-    MmapBuffer buffers[kNumV4l2Buffers]{};
-    uint32_t num_buffers = 0;
-    uint32_t next_write_idx = 0;
-    uint32_t frame_sequence = 0;
-
-    int num_formats = 0;
-    uint8_t default_frame_index = 1;
-    UvcFormatDesc formats[2]{};
-};
-
-static void populateFrameIntervals(UvcFrameDesc& frm, int capFps, uint32_t fallbackInterval) {
-    static constexpr struct { int fps; uint32_t interval; } kFpsTiers[] = {
-        {60, 166666u},
-        {30, 333333u},
-        {24, 416666u},
-        {15, 666666u},
-        {10, 1000000u},
-        {5,  2000000u},
-    };
-    memset(frm.intervals, 0, sizeof(frm.intervals));
-    int outIdx = 0;
-    for (const auto& tier : kFpsTiers) {
-        if (tier.fps <= capFps && outIdx < 8) {
-            frm.intervals[outIdx++] = tier.interval;
-        }
-    }
-    if (outIdx == 0) {
-        frm.intervals[0] = fallbackInterval;
-    }
-    frm.defaultInterval = frm.intervals[0];
-}
-
-static void initContextFormats(UvcContext* ctx, bool isYuyvOnly, int profileId,
-                               const uint16_t* widths = nullptr, const uint16_t* heights = nullptr,
-                               int numResolutions = 0, int defaultFps = 30) {
-    if (!ctx) return;
-
-    const int configuredMaxFps = std::clamp(defaultFps, 5, 60);
-
-    UvcFormatDesc mjpegFmt{};
-    mjpegFmt.formatIndex = 1;
-    mjpegFmt.fourcc = V4L2_PIX_FMT_MJPEG;
-
-    UvcFormatDesc yuyvFmt{};
-    yuyvFmt.formatIndex = isYuyvOnly ? 1 : 2;
-    yuyvFmt.fourcc = V4L2_PIX_FMT_YUYV;
-
-    if (numResolutions > 0 && widths != nullptr && heights != nullptr) {
-        int count = std::min(numResolutions, 16);
-        mjpegFmt.numFrames = static_cast<uint8_t>(count);
-        yuyvFmt.numFrames = static_cast<uint8_t>(count);
-
-        for (int i = 0; i < count; ++i) {
-            uint16_t w = widths[i];
-            uint16_t h = heights[i];
-            uint64_t pixels = static_cast<uint64_t>(w) * h;
-
-            // MJPEG frame intervals capped by configured max/default FPS
-            int mjpegHwMaxFps = (pixels <= 1920ULL * 1080ULL) ? 60 : 30;
-            int mjpegCapFps = std::min(configuredMaxFps, mjpegHwMaxFps);
-            mjpegFmt.frames[i] = {};
-            mjpegFmt.frames[i].frameIndex = static_cast<uint8_t>(i + 1);
-            mjpegFmt.frames[i].width = w;
-            mjpegFmt.frames[i].height = h;
-            populateFrameIntervals(mjpegFmt.frames[i], mjpegCapFps, 333333u);
-
-            // YUYV frame intervals capped by configured max/default FPS and USB bandwidth ceiling
-            int yuyvHwMaxFps = (pixels <= 640ULL * 480ULL) ? 30 : ((pixels <= 1280ULL * 720ULL) ? 15 : 5);
-            int yuyvCapFps = std::min(configuredMaxFps, yuyvHwMaxFps);
-            yuyvFmt.frames[i] = {};
-            yuyvFmt.frames[i].frameIndex = static_cast<uint8_t>(i + 1);
-            yuyvFmt.frames[i].width = w;
-            yuyvFmt.frames[i].height = h;
-            populateFrameIntervals(yuyvFmt.frames[i], yuyvCapFps, 2000000u);
-        }
-    } else {
-        const UvcFrameDesc frm360p = {1, 640, 360, 333333, {166666, 333333, 666666, 0}};
-        const UvcFrameDesc frm480p = {2, 640, 480, 333333, {166666, 333333, 666666, 0}};
-        const UvcFrameDesc frm720p = {3, 1280, 720, 333333, {166666, 333333, 666666, 0}};
-        const UvcFrameDesc frm1080p = {4, 1920, 1080, 333333, {166666, 333333, 666666, 0}};
-        const UvcFrameDesc frm1440p = {5, 2560, 1440, 333333, {166666, 333333, 666666, 0}};
-        const UvcFrameDesc frm4k = {6, 3840, 2160, 333333, {333333, 666666, 0, 0}};
-
-        const UvcFrameDesc yuyv360p = {1, 640, 360, 333333, {333333, 666666, 1000000, 0}};
-        const UvcFrameDesc yuyv480p = {2, 640, 480, 333333, {333333, 666666, 1000000, 0}};
-        const UvcFrameDesc yuyv720p = {3, 1280, 720, 666666, {666666, 1000000, 2000000, 0}};
-        const UvcFrameDesc yuyv1080p = {4, 1920, 1080, 2000000, {2000000, 0, 0, 0}};
-
-        switch (profileId) {
-            case 1: // Max 1440p (2K)
-                mjpegFmt.numFrames = 5;
-                mjpegFmt.frames[0] = frm360p;
-                mjpegFmt.frames[1] = frm480p;
-                mjpegFmt.frames[2] = frm720p;
-                mjpegFmt.frames[3] = frm1080p;
-                mjpegFmt.frames[4] = frm1440p;
-
-                yuyvFmt.numFrames = 4;
-                yuyvFmt.frames[0] = yuyv360p;
-                yuyvFmt.frames[1] = yuyv480p;
-                yuyvFmt.frames[2] = yuyv720p;
-                yuyvFmt.frames[3] = yuyv1080p;
-                break;
-
-            case 2: // Max 4K (2160p)
-                mjpegFmt.numFrames = 6;
-                mjpegFmt.frames[0] = frm360p;
-                mjpegFmt.frames[1] = frm480p;
-                mjpegFmt.frames[2] = frm720p;
-                mjpegFmt.frames[3] = frm1080p;
-                mjpegFmt.frames[4] = frm1440p;
-                mjpegFmt.frames[5] = frm4k;
-
-                yuyvFmt.numFrames = 4;
-                yuyvFmt.frames[0] = yuyv360p;
-                yuyvFmt.frames[1] = yuyv480p;
-                yuyvFmt.frames[2] = yuyv720p;
-                yuyvFmt.frames[3] = yuyv1080p;
-                break;
-
-            case 3: // Max 720p (HD)
-                mjpegFmt.numFrames = 3;
-                mjpegFmt.frames[0] = frm360p;
-                mjpegFmt.frames[1] = frm480p;
-                mjpegFmt.frames[2] = frm720p;
-
-                yuyvFmt.numFrames = 3;
-                yuyvFmt.frames[0] = yuyv360p;
-                yuyvFmt.frames[1] = yuyv480p;
-                yuyvFmt.frames[2] = yuyv720p;
-                break;
-
-            case 4: // Only 1080p (FHD Forced)
-                mjpegFmt.numFrames = 1;
-                mjpegFmt.frames[0] = {1, 1920, 1080, 333333, {166666, 333333, 666666, 0}};
-
-                yuyvFmt.numFrames = 1;
-                yuyvFmt.frames[0] = {1, 1920, 1080, 2000000, {2000000, 0, 0, 0}};
-                break;
-
-            case 5: // Only 720p (HD Forced)
-                mjpegFmt.numFrames = 1;
-                mjpegFmt.frames[0] = {1, 1280, 720, 333333, {166666, 333333, 666666, 0}};
-
-                yuyvFmt.numFrames = 1;
-                yuyvFmt.frames[0] = {1, 1280, 720, 666666, {666666, 1000000, 2000000, 0}};
-                break;
-
-            case 6: // Only 4K (UHD Forced)
-                mjpegFmt.numFrames = 1;
-                mjpegFmt.frames[0] = {1, 3840, 2160, 333333, {333333, 666666, 0, 0}};
-
-                yuyvFmt.numFrames = 1;
-                yuyvFmt.frames[0] = {1, 1920, 1080, 2000000, {2000000, 0, 0, 0}};
-                break;
-
-            case 7: // Portrait 9:16
-                mjpegFmt.numFrames = 3;
-                mjpegFmt.frames[0] = {1, 1080, 1920, 333333, {166666, 333333, 666666, 0}};
-                mjpegFmt.frames[1] = {2, 720, 1280, 333333, {166666, 333333, 666666, 0}};
-                mjpegFmt.frames[2] = {3, 1440, 2560, 333333, {166666, 333333, 666666, 0}};
-
-                yuyvFmt.numFrames = 3;
-                yuyvFmt.frames[0] = {1, 1080, 1920, 2000000, {2000000, 0, 0, 0}};
-                yuyvFmt.frames[1] = {2, 720, 1280, 666666, {666666, 1000000, 2000000, 0}};
-                yuyvFmt.frames[2] = {3, 1440, 2560, 2000000, {2000000, 0, 0, 0}};
-                break;
-
-            case 0: // Max 1080p (Default)
-            default:
-                mjpegFmt.numFrames = 4;
-                mjpegFmt.frames[0] = frm360p;
-                mjpegFmt.frames[1] = frm480p;
-                mjpegFmt.frames[2] = frm720p;
-                mjpegFmt.frames[3] = frm1080p;
-
-                yuyvFmt.numFrames = 4;
-                yuyvFmt.frames[0] = yuyv360p;
-                yuyvFmt.frames[1] = yuyv480p;
-                yuyvFmt.frames[2] = yuyv720p;
-                yuyvFmt.frames[3] = yuyv1080p;
-                break;
-        }
-        for (int i = 0; i < mjpegFmt.numFrames; ++i) {
-            uint64_t pixels = static_cast<uint64_t>(mjpegFmt.frames[i].width) * mjpegFmt.frames[i].height;
-            int capFps = std::min(configuredMaxFps, (pixels <= 1920ULL * 1080ULL) ? 60 : 30);
-            populateFrameIntervals(mjpegFmt.frames[i], capFps, 333333u);
-        }
-        for (int i = 0; i < yuyvFmt.numFrames; ++i) {
-            uint64_t pixels = static_cast<uint64_t>(yuyvFmt.frames[i].width) * yuyvFmt.frames[i].height;
-            int hwMax = (pixels <= 640ULL * 480ULL) ? 30 : ((pixels <= 1280ULL * 720ULL) ? 15 : 5);
-            populateFrameIntervals(yuyvFmt.frames[i], std::min(configuredMaxFps, hwMax), 2000000u);
-        }
-    }
-
-    if (isYuyvOnly) {
-        ctx->num_formats = 1;
-        ctx->formats[0] = yuyvFmt;
-    } else {
-        ctx->num_formats = 2;
-        ctx->formats[0] = mjpegFmt;
-        ctx->formats[1] = yuyvFmt;
-    }
-}
-
-static std::mutex g_ctx_mutex;
-static UvcContext* g_ctx = nullptr;
+std::mutex g_ctx_mutex;
+UvcContext* g_ctx = nullptr;
 
 // Minimal valid 16x16 black JPEG used to prime V4L2 buffer 0 on STREAMON before Camera2 delivers its first frame
-static const uint8_t kTinyBlackJpeg[] = {
+const uint8_t kTinyBlackJpeg[] = {
     0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01,
     0x01, 0x01, 0x00, 0x48, 0x00, 0x48, 0x00, 0x00, 0xff, 0xdb, 0x00, 0x43,
     0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
@@ -315,49 +40,6 @@ static const uint8_t kTinyBlackJpeg[] = {
     0x00, 0x00, 0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00,
     0x37, 0xff, 0xd9
 };
-
-void fillStreamingControl(
-    UvcContext* ctx,
-    struct uvc_streaming_control* ctrl,
-    int formatIndex,
-    int frameIndex,
-    uint32_t requestedInterval
-) {
-    memset(ctrl, 0, sizeof(*ctrl));
-    if (!ctx || ctx->num_formats == 0) return;
-
-    int maxFmt = ctx->num_formats;
-    int fmtIdx = (formatIndex >= 1 && formatIndex <= maxFmt) ? (formatIndex - 1) : 0;
-    const UvcFormatDesc& fmt = ctx->formats[fmtIdx];
-
-    int frmIdx = (frameIndex >= 1 && frameIndex <= fmt.numFrames) ? (frameIndex - 1) : 0;
-    const UvcFrameDesc& frm = fmt.frames[frmIdx];
-
-    uint32_t interval = frm.defaultInterval;
-    if (requestedInterval != 0) {
-        for (int i = 0; i < 8 && frm.intervals[i] != 0; ++i) {
-            interval = frm.intervals[i];
-            if (requestedInterval <= frm.intervals[i]) {
-                break;
-            }
-        }
-    }
-
-    ctrl->bmHint = 1; // dwFrameInterval
-    ctrl->bFormatIndex = fmt.formatIndex;
-    ctrl->bFrameIndex = frm.frameIndex;
-    ctrl->dwFrameInterval = interval;
-    ctrl->wKeyFrameRate = 0;
-    ctrl->wPFrameRate = 0;
-    ctrl->wCompQuality = 0;
-    ctrl->wCompWindowSize = 0;
-    ctrl->wDelay = 0;
-    ctrl->dwMaxVideoFrameSize = static_cast<uint32_t>(frm.width) * static_cast<uint32_t>(frm.height) * 2u;
-    ctrl->dwMaxPayloadTransferSize = ctx->max_payload_size;
-    ctrl->bmFramingInfo = 3;
-    ctrl->bPreferedVersion = 1;
-    ctrl->bMaxVersion = 1;
-}
 
 void stopV4l2StreamingLocked(UvcContext* ctx, bool callStreamOffIoctl = true) {
     if (!ctx) return;
@@ -477,20 +159,9 @@ bool startV4l2StreamingLocked(UvcContext* ctx) {
             memcpy(ctx->buffers[0].start, kTinyBlackJpeg, sizeof(kTinyBlackJpeg));
             buf.bytesused = sizeof(kTinyBlackJpeg);
         } else {
-            uint8_t* p = static_cast<uint8_t*>(ctx->buffers[0].start);
             size_t frameBytes = static_cast<size_t>(ctx->active_width) * ctx->active_height * 2u;
             if (frameBytes > ctx->buffers[0].length) frameBytes = ctx->buffers[0].length;
-            size_t j = 0;
-#if defined(__aarch64__) || defined(__ARM_NEON__)
-            uint8x16_t blackYuyv = vreinterpretq_u8_u16(vdupq_n_u16(0x8000));
-            for (; j + 16 <= frameBytes; j += 16) {
-                vst1q_u8(p + j, blackYuyv);
-            }
-#endif
-            for (; j + 1 < frameBytes; j += 2) {
-                p[j] = 0x00;
-                p[j + 1] = 0x80;
-            }
+            fillBlackYuyvFrame(static_cast<uint8_t*>(ctx->buffers[0].start), frameBytes);
             buf.bytesused = static_cast<uint32_t>(frameBytes);
         }
         if (ioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf) == 0) {
@@ -510,302 +181,6 @@ bool startV4l2StreamingLocked(UvcContext* ctx) {
     LOGI("V4L2 UVC stream started: %ux%u fourcc=0x%x interval=%u num_buffers=%u",
          ctx->active_width, ctx->active_height, ctx->active_fourcc, ctx->active_interval, ctx->num_buffers);
     return true;
-}
-
-void handleUvcSetupEvent(UvcContext* ctx, const struct usb_ctrlrequest& ctrl, struct uvc_request_data& resp) {
-    resp.length = -EL2HLT; // Stall by default if unhandled
-
-    if ((ctrl.bRequestType & USB_TYPE_MASK) != USB_TYPE_CLASS) {
-        return;
-    }
-
-    const uint8_t recip = ctrl.bRequestType & USB_RECIP_MASK;
-    if (recip != USB_RECIP_INTERFACE) {
-        return;
-    }
-
-    const uint8_t entityId = (ctrl.wIndex >> 8) & 0xff;
-    const uint8_t cs = (ctrl.wValue >> 8) & 0xff;
-
-    const bool isStreamingProbeOrCommit =
-        (entityId == 0) &&
-        (cs == UVC_VS_PROBE_CONTROL || cs == UVC_VS_COMMIT_CONTROL) &&
-        !(ctrl.bRequest == UVC_GET_CUR && ctrl.wLength == 1);
-
-    if (!isStreamingProbeOrCommit) {
-        if (cs == UVC_VC_REQUEST_ERROR_CODE_CONTROL) {
-            resp.data[0] = 0x06; // Invalid control
-            resp.length = 1;
-        } else {
-            switch (ctrl.bRequest) {
-                case UVC_SET_CUR:
-                    resp.data[0] = 0x00;
-                    resp.length = ctrl.wLength;
-                    break;
-                case UVC_GET_INFO:
-                    resp.data[0] = 0x03;
-                    resp.length = 1;
-                    break;
-                default:
-                    memset(resp.data, 0, sizeof(resp.data));
-                    resp.length = ctrl.wLength > sizeof(resp.data) ? sizeof(resp.data) : ctrl.wLength;
-                    break;
-            }
-        }
-        return;
-    }
-
-    ctx->current_control = cs;
-    struct uvc_streaming_control* target = (cs == UVC_VS_PROBE_CONTROL) ? &ctx->probe_ctrl : &ctx->commit_ctrl;
-
-    switch (ctrl.bRequest) {
-        case UVC_SET_CUR:
-            resp.data[0] = 0x00;
-            resp.length = ctrl.wLength;
-            break;
-
-        case UVC_GET_CUR:
-            memcpy(resp.data, target, sizeof(*target));
-            resp.length = ctrl.wLength < sizeof(*target) ? ctrl.wLength : sizeof(*target);
-            break;
-
-        case UVC_GET_MIN:
-        case UVC_GET_MAX:
-        case UVC_GET_DEF: {
-            int maxFmt = ctx->num_formats;
-            uint8_t fmtNum = target->bFormatIndex ? target->bFormatIndex : 1;
-            int fmtIdx = (fmtNum >= 1 && fmtNum <= maxFmt) ? (fmtNum - 1) : 0;
-            const UvcFormatDesc& fmt = ctx->formats[fmtIdx];
-
-            uint8_t frmNum = target->bFrameIndex ? target->bFrameIndex : ctx->default_frame_index;
-            int frmIdx = (frmNum >= 1 && frmNum <= fmt.numFrames) ? (frmNum - 1) : 0;
-            const UvcFrameDesc& frm = fmt.frames[frmIdx];
-
-            uint32_t reqInterval = 0u;
-            if (ctrl.bRequest == UVC_GET_MIN) {
-                reqInterval = frm.intervals[0] ? frm.intervals[0] : frm.defaultInterval;
-            } else if (ctrl.bRequest == UVC_GET_MAX) {
-                reqInterval = 0xFFFFFFFFu;
-            }
-
-            struct uvc_streaming_control temp {};
-            fillStreamingControl(
-                ctx,
-                &temp,
-                fmtNum,
-                frmNum,
-                reqInterval
-            );
-            memcpy(resp.data, &temp, sizeof(temp));
-            resp.length = ctrl.wLength < sizeof(temp) ? ctrl.wLength : sizeof(temp);
-            break;
-        }
-
-        case UVC_GET_RES:
-            memset(resp.data, 0, sizeof(resp.data));
-            resp.length = ctrl.wLength < sizeof(*target) ? ctrl.wLength : sizeof(*target);
-            break;
-
-        case UVC_GET_LEN:
-            resp.data[0] = sizeof(struct uvc_streaming_control);
-            resp.data[1] = 0x00;
-            resp.length = 2;
-            break;
-
-        case UVC_GET_INFO:
-            resp.data[0] = 0x03; // Supports GET and SET
-            resp.length = 1;
-            break;
-    }
-}
-
-void handleUvcDataEvent(UvcContext* ctx, const struct uvc_request_data& data) {
-    if (ctx->current_control != UVC_VS_PROBE_CONTROL && ctx->current_control != UVC_VS_COMMIT_CONTROL) {
-        return;
-    }
-    if (data.length < 26) {
-        return;
-    }
-
-    const auto* incoming = reinterpret_cast<const struct uvc_streaming_control*>(data.data);
-    struct uvc_streaming_control resolved {};
-    fillStreamingControl(ctx, &resolved, incoming->bFormatIndex, incoming->bFrameIndex, incoming->dwFrameInterval);
-
-    ctx->probe_ctrl = resolved;
-    if (ctx->current_control == UVC_VS_COMMIT_CONTROL) {
-        ctx->commit_ctrl = resolved;
-
-        int maxFmt = ctx->num_formats;
-        int fmtIdx = (resolved.bFormatIndex >= 1 && resolved.bFormatIndex <= maxFmt) ? (resolved.bFormatIndex - 1) : 0;
-        const UvcFormatDesc& fmt = ctx->formats[fmtIdx];
-        int frmIdx = (resolved.bFrameIndex >= 1 && resolved.bFrameIndex <= fmt.numFrames) ? (resolved.bFrameIndex - 1) : 0;
-        const UvcFrameDesc& frm = fmt.frames[frmIdx];
-
-        ctx->active_fourcc = fmt.fourcc;
-        ctx->active_width = frm.width;
-        ctx->active_height = frm.height;
-        ctx->active_interval = resolved.dwFrameInterval ? resolved.dwFrameInterval : frm.defaultInterval;
-
-        LOGI("Host committed UVC format: fmt=%u (%s) %ux%u interval=%u",
-             fmt.formatIndex,
-             (fmt.fourcc == V4L2_PIX_FMT_MJPEG) ? "MJPEG" : "YUYV",
-             ctx->active_width,
-             ctx->active_height,
-             ctx->active_interval);
-    }
-}
-
-/**
- * Precomputes 1D source coordinate lookup tables in O(dstW + dstH) time instead of O(dstW * dstH),
- * completely eliminating per-pixel branches and integer divisions during scaling/rotation/mirroring.
- *
- * When swappedAxes == false (rotation 0 or 180):
- *   sx = lutForDestX[dx], sy = lutForDestY[dy]
- * When swappedAxes == true (rotation 90 or 270):
- *   sx = lutForDestY[dy], sy = lutForDestX[dx]
- */
-void buildCoordinateLuts(
-    int dstW, int dstH,
-    int srcW, int srcH,
-    int rotation, bool mirror,
-    float zoom, float panX, float panY,
-    bool& swappedAxes,
-    std::vector<int>& lutForDestX,
-    std::vector<int>& lutForDestY
-) {
-    swappedAxes = (rotation == 90 || rotation == 270);
-    const int rw = swappedAxes ? dstH : dstW;
-    const int rh = swappedAxes ? dstW : dstH;
-
-    int baseW = srcW;
-    int baseH = srcH;
-    if (static_cast<int64_t>(srcW) * rh > static_cast<int64_t>(srcH) * rw) {
-        baseW = static_cast<int>((static_cast<int64_t>(srcH) * rw) / rh);
-    } else if (static_cast<int64_t>(srcW) * rh < static_cast<int64_t>(srcH) * rw) {
-        baseH = static_cast<int>((static_cast<int64_t>(srcW) * rh) / rw);
-    }
-
-    const float z = (zoom >= 1.0f) ? zoom : 1.0f;
-    int croppedSrcW = static_cast<int>(baseW / z);
-    int croppedSrcH = static_cast<int>(baseH / z);
-    if (croppedSrcW < 16) croppedSrcW = 16;
-    if (croppedSrcH < 16) croppedSrcH = 16;
-    if (croppedSrcW > srcW) croppedSrcW = srcW;
-    if (croppedSrcH > srcH) croppedSrcH = srcH;
-
-    const int maxPanX = srcW - croppedSrcW;
-    const int maxPanY = srcH - croppedSrcH;
-
-    float userX = mirror ? -panX : panX;
-    float userY = panY;
-
-    float sensorPanX = userX;
-    float sensorPanY = userY;
-    switch (rotation) {
-        case 90:
-            sensorPanX = userY;
-            sensorPanY = -userX;
-            break;
-        case 180:
-            sensorPanX = -userX;
-            sensorPanY = -userY;
-            break;
-        case 270:
-            sensorPanX = -userY;
-            sensorPanY = userX;
-            break;
-        default:
-            break;
-    }
-
-    const float normX = ((sensorPanX < -1.0f ? -1.0f : (sensorPanX > 1.0f ? 1.0f : sensorPanX)) + 1.0f) * 0.5f;
-    const float normY = ((sensorPanY < -1.0f ? -1.0f : (sensorPanY > 1.0f ? 1.0f : sensorPanY)) + 1.0f) * 0.5f;
-
-    const int offsetX = static_cast<int>(normX * maxPanX);
-    const int offsetY = static_cast<int>(normY * maxPanY);
-
-    lutForDestX.resize(dstW);
-    lutForDestY.resize(dstH);
-
-    if (!swappedAxes) {
-        // rotation 0 or 180: rx depends on dx, ry depends on dy
-        for (int dx = 0; dx < dstW; ++dx) {
-            int mx = mirror ? (dstW - 1 - dx) : dx;
-            int rx = (rotation == 180) ? (dstW - 1 - mx) : mx;
-            int sx = offsetX + static_cast<int>((static_cast<int64_t>(rx) * croppedSrcW) / rw);
-            if (sx < 0) sx = 0;
-            else if (sx >= srcW) sx = srcW - 1;
-            lutForDestX[dx] = sx;
-        }
-        for (int dy = 0; dy < dstH; ++dy) {
-            int ry = (rotation == 180) ? (dstH - 1 - dy) : dy;
-            int sy = offsetY + static_cast<int>((static_cast<int64_t>(ry) * croppedSrcH) / rh);
-            if (sy < 0) sy = 0;
-            else if (sy >= srcH) sy = srcH - 1;
-            lutForDestY[dy] = sy;
-        }
-    } else {
-        // rotation 90 or 270: rx depends on dy, ry depends on dx
-        for (int dx = 0; dx < dstW; ++dx) {
-            int mx = mirror ? (dstW - 1 - dx) : dx;
-            int ry = (rotation == 90) ? (dstW - 1 - mx) : mx;
-            int sy = offsetY + static_cast<int>((static_cast<int64_t>(ry) * croppedSrcH) / rh);
-            if (sy < 0) sy = 0;
-            else if (sy >= srcH) sy = srcH - 1;
-            lutForDestX[dx] = sy;
-        }
-        for (int dy = 0; dy < dstH; ++dy) {
-            int rx = (rotation == 270) ? (dstH - 1 - dy) : dy;
-            int sx = offsetX + static_cast<int>((static_cast<int64_t>(rx) * croppedSrcW) / rw);
-            if (sx < 0) sx = 0;
-            else if (sx >= srcW) sx = srcW - 1;
-            lutForDestY[dy] = sx;
-        }
-    }
-}
-
-struct CoordinateLutCache {
-    int dstW = 0;
-    int dstH = 0;
-    int srcW = 0;
-    int srcH = 0;
-    int rotation = -1;
-    bool mirror = false;
-    float zoom = 1.0f;
-    float panX = 0.0f;
-    float panY = 0.0f;
-    bool swappedAxes = false;
-    std::vector<int> lutX;
-    std::vector<int> lutY;
-};
-
-static thread_local CoordinateLutCache tl_lutCache;
-
-inline const CoordinateLutCache& getCoordinateLuts(
-    int dstW, int dstH,
-    int srcW, int srcH,
-    int rotation, bool mirror,
-    float zoom, float panX, float panY
-) {
-    if (tl_lutCache.dstW != dstW || tl_lutCache.dstH != dstH ||
-        tl_lutCache.srcW != srcW || tl_lutCache.srcH != srcH ||
-        tl_lutCache.rotation != rotation || tl_lutCache.mirror != mirror ||
-        std::abs(tl_lutCache.zoom - zoom) > 0.001f ||
-        std::abs(tl_lutCache.panX - panX) > 0.001f ||
-        std::abs(tl_lutCache.panY - panY) > 0.001f) {
-        tl_lutCache.dstW = dstW;
-        tl_lutCache.dstH = dstH;
-        tl_lutCache.srcW = srcW;
-        tl_lutCache.srcH = srcH;
-        tl_lutCache.rotation = rotation;
-        tl_lutCache.mirror = mirror;
-        tl_lutCache.zoom = zoom;
-        tl_lutCache.panX = panX;
-        tl_lutCache.panY = panY;
-        buildCoordinateLuts(dstW, dstH, srcW, srcH, rotation, mirror, zoom, panX, panY,
-                            tl_lutCache.swappedAxes, tl_lutCache.lutX, tl_lutCache.lutY);
-    }
-    return tl_lutCache;
 }
 
 void drainCompletedBuffersLocked(UvcContext* ctx) {
@@ -833,49 +208,29 @@ uint32_t countQueuedBuffersLocked(const UvcContext* ctx) {
     return count;
 }
 
-/**
- * Calculates the maximum queued kernel buffers allowed for a given queue depth preference.
- *
- * In USB UVC DMA, 1 buffer is always actively being streamed by DWC3 hardware DMA.
- * Enforcing maxQueued = 1 prevents queuing a second buffer while the initial primed
- * black frame is active, causing an unrecoverable deadlock.
- *
- * Adding 1 treats `maxInFlight` as the depth of buffers queued *ahead* of the active DMA buffer:
- * - maxInFlight = 1 -> 2 buffers in kernel (1 DMA + 1 queued ahead), minimal single-frame latency.
- * - maxInFlight = 2 -> 3 buffers in kernel (tear-free balanced).
- * - maxInFlight = 3 -> 4 buffers in kernel (max smoothness).
- */
-static inline uint32_t computeMaxQueuedBuffersLocked(const UvcContext* ctx, int maxInFlight) {
-    const uint32_t allowedInFlight = static_cast<uint32_t>(maxInFlight > 0 ? maxInFlight : 1) + 1;
-    return (allowedInFlight < ctx->num_buffers)
-        ? allowedInFlight
-        : (ctx->num_buffers - 1);
+inline uint32_t computeMaxQueuedBuffersLocked(const UvcContext* ctx, int maxInFlight) {
+    if (ctx->num_buffers <= 1) return 1;
+    uint32_t cap = (maxInFlight >= 1) ? static_cast<uint32_t>(maxInFlight) : 1u;
+    uint32_t maxAllowed = ctx->num_buffers - 1;
+    return (cap < maxAllowed) ? cap : maxAllowed;
 }
 
-/**
- * Drains completed V4L2 buffers and selects the next write buffer using a strict round-robin index
- * (`next_write_idx`) while respecting `maxInFlight`.
- *
- * This guarantees that a buffer recently marked DONE by `f_uvc` (which may still have scatter-gather
- * TRBs draining in the DWC3 hardware FIFO) is not overwritten until `num_buffers - 1` frames later,
- * completely preventing mid-frame tearing.
- */
 int acquireWritableBufferLocked(UvcContext* ctx, struct v4l2_buffer& buf, int maxInFlight) {
+    if (ctx->num_buffers == 0) return -1;
+
+    // 1. Drain any completed buffers returned by USB stack
     drainCompletedBuffersLocked(ctx);
 
-    if (ctx->num_buffers == 0) {
-        return -1;
-    }
-
+    // 2. Enforce strict zero-tear queue cap
     const uint32_t maxQueued = computeMaxQueuedBuffersLocked(ctx, maxInFlight);
-
     if (countQueuedBuffersLocked(ctx) >= maxQueued) {
         return -1;
     }
 
-    for (uint32_t step = 0; step < ctx->num_buffers; ++step) {
-        uint32_t idx = (ctx->next_write_idx + step) % ctx->num_buffers;
-        if (!ctx->buffers[idx].queued && ctx->buffers[idx].start != nullptr) {
+    // 3. Pick the next unqueued buffer strictly in circular ring order
+    for (uint32_t offset = 0; offset < ctx->num_buffers; ++offset) {
+        uint32_t idx = (ctx->next_write_idx + offset) % ctx->num_buffers;
+        if (!ctx->buffers[idx].queued) {
             memset(&buf, 0, sizeof(buf));
             buf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
             buf.memory = V4L2_MEMORY_MMAP;
@@ -947,7 +302,7 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeOpen(
         jsize lenH = env->GetArrayLength(jHeights);
         jint* wPtr = env->GetIntArrayElements(jWidths, nullptr);
         jint* hPtr = env->GetIntArrayElements(jHeights, nullptr);
-        numRes = std::min({(int)lenW, (int)lenH, 16});
+        numRes = std::min({static_cast<int>(lenW), static_cast<int>(lenH), 16});
         for (int i = 0; i < numRes; ++i) {
             localWidths[i] = static_cast<uint16_t>(wPtr[i]);
             localHeights[i] = static_cast<uint16_t>(hPtr[i]);
@@ -1183,7 +538,6 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeCanAcceptFrame(
     drainCompletedBuffersLocked(ctx);
 
     const uint32_t maxQueued = computeMaxQueuedBuffersLocked(ctx, maxInFlight);
-
     return (countQueuedBuffersLocked(ctx) < maxQueued) ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -1287,118 +641,13 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativePushYuvToYuyvFrame(
         return JNI_FALSE;
     }
 
-    auto* __restrict dst = static_cast<uint8_t*>(ctx->buffers[idx].start);
-    const bool isIdentity = (rotation == 0 && !mirror && srcW == dstW && srcH == dstH && zoom <= 1.001f && panX == 0.0f && panY == 0.0f);
-
-    if (isIdentity) {
-        for (int y = 0; y < dstH; ++y) {
-            const uint8_t* __restrict yRow = yPlane + y * yRowStride;
-            const uint8_t* __restrict uRow = uPlane + (y >> 1) * uvRowStride;
-            const uint8_t* __restrict vRow = vPlane + (y >> 1) * uvRowStride;
-            uint8_t* __restrict dstRow = dst + y * (dstW * 2);
-
-            int x = 0;
-#if defined(__aarch64__) || defined(__ARM_NEON__)
-            if (uvPixelStride == 2 && (vPlane + 1 == uPlane)) {
-                // NV21 semi-planar source -> YUYV via NEON
-                for (; x + 16 <= dstW; x += 16) {
-                    uint8x16_t yVec = vld1q_u8(yRow + x);
-                    uint8x8x2_t vuVec = vld2_u8(vRow + x); // val[0] = V, val[1] = U
-                    uint8x8x2_t uvZip = vzip_u8(vuVec.val[1], vuVec.val[0]); // interleave U0,V0,U1,V1...
-                    uint8x16_t uvVec = vcombine_u8(uvZip.val[0], uvZip.val[1]);
-                    uint8x16x2_t yuyv;
-                    yuyv.val[0] = yVec;
-                    yuyv.val[1] = uvVec;
-                    vst2q_u8(dstRow + x * 2, yuyv);
-                }
-            } else if (uvPixelStride == 2 && (uPlane + 1 == vPlane)) {
-                // NV12 semi-planar source -> YUYV via NEON
-                for (; x + 16 <= dstW; x += 16) {
-                    uint8x16_t yVec = vld1q_u8(yRow + x);
-                    uint8x16_t uvVec = vld1q_u8(uRow + x); // already U0,V0,U1,V1...
-                    uint8x16x2_t yuyv;
-                    yuyv.val[0] = yVec;
-                    yuyv.val[1] = uvVec;
-                    vst2q_u8(dstRow + x * 2, yuyv);
-                }
-            } else if (uvPixelStride == 2) {
-                // Separate or non-adjacent semi-planar UV with stride 2 -> YUYV via NEON
-                for (; x + 16 <= dstW; x += 16) {
-                    uint8x16_t yVec = vld1q_u8(yRow + x);
-                    uint8x8x2_t uDeint = vld2_u8(uRow + x);
-                    uint8x8x2_t vDeint = vld2_u8(vRow + x);
-                    uint8x8x2_t uvZip = vzip_u8(uDeint.val[0], vDeint.val[0]);
-                    uint8x16_t uvVec = vcombine_u8(uvZip.val[0], uvZip.val[1]);
-                    uint8x16x2_t yuyv;
-                    yuyv.val[0] = yVec;
-                    yuyv.val[1] = uvVec;
-                    vst2q_u8(dstRow + x * 2, yuyv);
-                }
-            } else if (uvPixelStride == 1) {
-                // Planar I420 / YV12 source -> YUYV via NEON
-                for (; x + 16 <= dstW; x += 16) {
-                    uint8x16_t yVec = vld1q_u8(yRow + x);
-                    uint8x8_t uVec = vld1_u8(uRow + (x >> 1));
-                    uint8x8_t vVec = vld1_u8(vRow + (x >> 1));
-                    uint8x8x2_t uvZip = vzip_u8(uVec, vVec);
-                    uint8x16_t uvVec = vcombine_u8(uvZip.val[0], uvZip.val[1]);
-                    uint8x16x2_t yuyv;
-                    yuyv.val[0] = yVec;
-                    yuyv.val[1] = uvVec;
-                    vst2q_u8(dstRow + x * 2, yuyv);
-                }
-            }
-#endif
-            for (; x < dstW; x += 2) {
-                int uvOffset = (x >> 1) * uvPixelStride;
-                dstRow[x * 2 + 0] = yRow[x];
-                dstRow[x * 2 + 1] = uRow[uvOffset];
-                dstRow[x * 2 + 2] = yRow[x + 1];
-                dstRow[x * 2 + 3] = vRow[uvOffset];
-            }
-        }
-    } else {
-        const auto& cache = getCoordinateLuts(dstW, dstH, srcW, srcH, rotation, mirror == JNI_TRUE, zoom, panX, panY);
-        const bool swappedAxes = cache.swappedAxes;
-        const int* __restrict lutX = cache.lutX.data();
-        const int* __restrict lutY = cache.lutY.data();
-
-        if (!swappedAxes) {
-            for (int y = 0; y < dstH; ++y) {
-                const int sy = lutY[y];
-                const uint8_t* __restrict yRow = yPlane + sy * yRowStride;
-                const uint8_t* __restrict uRow = uPlane + (sy >> 1) * uvRowStride;
-                const uint8_t* __restrict vRow = vPlane + (sy >> 1) * uvRowStride;
-                uint8_t* __restrict dstRow = dst + y * (dstW * 2);
-
-                for (int x = 0; x < dstW; x += 2) {
-                    const int sx0 = lutX[x];
-                    const int sx1 = lutX[x + 1];
-                    const int uvIdx = (sx0 >> 1) * uvPixelStride;
-                    dstRow[x * 2 + 0] = yRow[sx0];
-                    dstRow[x * 2 + 1] = uRow[uvIdx];
-                    dstRow[x * 2 + 2] = yRow[sx1];
-                    dstRow[x * 2 + 3] = vRow[uvIdx];
-                }
-            }
-        } else {
-            for (int y = 0; y < dstH; ++y) {
-                const int sx = lutY[y];
-                const int uvColOffset = (sx >> 1) * uvPixelStride;
-                uint8_t* __restrict dstRow = dst + y * (dstW * 2);
-
-                for (int x = 0; x < dstW; x += 2) {
-                    const int sy0 = lutX[x];
-                    const int sy1 = lutX[x + 1];
-                    const int uvIdx = (sy0 >> 1) * uvRowStride + uvColOffset;
-                    dstRow[x * 2 + 0] = yPlane[sy0 * yRowStride + sx];
-                    dstRow[x * 2 + 1] = uPlane[uvIdx];
-                    dstRow[x * 2 + 2] = yPlane[sy1 * yRowStride + sx];
-                    dstRow[x * 2 + 3] = vPlane[uvIdx];
-                }
-            }
-        }
-    }
+    convertYuv420ToYuyv(
+        yPlane, uPlane, vPlane,
+        srcW, srcH,
+        yRowStride, uvRowStride, uvPixelStride,
+        static_cast<uint8_t*>(ctx->buffers[idx].start), dstW, dstH,
+        rotation, mirror == JNI_TRUE, zoom, panX, panY
+    );
 
     buf.bytesused = static_cast<uint32_t>(neededBytes);
     buf.sequence = ctx->frame_sequence++;
@@ -1442,224 +691,13 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeYuv420ToNv21(
     auto* __restrict nv21 = static_cast<uint8_t*>(env->GetPrimitiveArrayCritical(outNv21, nullptr));
     if (!nv21) return;
 
-    uint8_t* __restrict dstY = nv21;
-    uint8_t* __restrict dstVU = nv21 + (dstW * dstH);
-
-    const bool isIdentity = (rotation == 0 && !mirror && srcW == dstW && srcH == dstH && zoom <= 1.001f && panX == 0.0f && panY == 0.0f);
-
-    if (isIdentity) {
-        if (yRowStride == dstW) {
-            memcpy(dstY, yPlane, static_cast<size_t>(dstW) * dstH);
-        } else {
-            for (int y = 0; y < dstH; ++y) {
-                memcpy(dstY + y * dstW, yPlane + y * yRowStride, dstW);
-            }
-        }
-
-        const int chromaH = dstH >> 1;
-        const int chromaW = dstW >> 1;
-        if (uvPixelStride == 2 && (vPlane + 1 == uPlane)) {
-            // Hardware buffer is already NV21 (V followed by U)
-            if (uvRowStride == dstW) {
-                memcpy(dstVU, vPlane, static_cast<size_t>(dstW) * chromaH);
-            } else {
-                for (int cy = 0; cy < chromaH; ++cy) {
-                    memcpy(dstVU + cy * dstW, vPlane + cy * uvRowStride, dstW);
-                }
-            }
-        } else if (uvPixelStride == 2 && (uPlane + 1 == vPlane)) {
-            // Hardware buffer is NV12 (U followed by V) — swap pairs using ARM NEON
-            for (int cy = 0; cy < chromaH; ++cy) {
-                const uint8_t* __restrict uvSrc = uPlane + cy * uvRowStride;
-                uint8_t* __restrict vuDst = dstVU + cy * dstW;
-                int cx = 0;
-#if defined(__aarch64__) || defined(__ARM_NEON__)
-                for (; cx + 16 <= chromaW; cx += 16) {
-                    uint8x16x2_t uv = vld2q_u8(uvSrc + cx * 2);
-                    uint8x16x2_t vu;
-                    vu.val[0] = uv.val[1]; // V
-                    vu.val[1] = uv.val[0]; // U
-                    vst2q_u8(vuDst + cx * 2, vu);
-                }
-#endif
-                for (; cx < chromaW; ++cx) {
-                    vuDst[cx * 2 + 0] = uvSrc[cx * 2 + 1];
-                    vuDst[cx * 2 + 1] = uvSrc[cx * 2 + 0];
-                }
-            }
-        } else if (uvPixelStride == 2) {
-            // Separate or non-adjacent semi-planar UV with stride 2 -> NV21 via ARM NEON
-            for (int cy = 0; cy < chromaH; ++cy) {
-                const uint8_t* __restrict uRow = uPlane + cy * uvRowStride;
-                const uint8_t* __restrict vRow = vPlane + cy * uvRowStride;
-                uint8_t* __restrict vuRow = dstVU + cy * dstW;
-                int cx = 0;
-#if defined(__aarch64__) || defined(__ARM_NEON__)
-                for (; cx + 16 <= chromaW; cx += 16) {
-                    uint8x16x2_t uDeint = vld2q_u8(uRow + cx * 2);
-                    uint8x16x2_t vDeint = vld2q_u8(vRow + cx * 2);
-                    uint8x16x2_t vu;
-                    vu.val[0] = vDeint.val[0];
-                    vu.val[1] = uDeint.val[0];
-                    vst2q_u8(vuRow + cx * 2, vu);
-                }
-#endif
-                for (; cx < chromaW; ++cx) {
-                    vuRow[cx * 2 + 0] = vRow[cx * 2];
-                    vuRow[cx * 2 + 1] = uRow[cx * 2];
-                }
-            }
-        } else if (uvPixelStride == 1) {
-            // Planar I420 -> NV21 via ARM NEON
-            for (int cy = 0; cy < chromaH; ++cy) {
-                const uint8_t* __restrict uRow = uPlane + cy * uvRowStride;
-                const uint8_t* __restrict vRow = vPlane + cy * uvRowStride;
-                uint8_t* __restrict vuRow = dstVU + cy * dstW;
-                int cx = 0;
-#if defined(__aarch64__) || defined(__ARM_NEON__)
-                for (; cx + 16 <= chromaW; cx += 16) {
-                    uint8x16x2_t vu;
-                    vu.val[0] = vld1q_u8(vRow + cx);
-                    vu.val[1] = vld1q_u8(uRow + cx);
-                    vst2q_u8(vuRow + cx * 2, vu);
-                }
-#endif
-                for (; cx < chromaW; ++cx) {
-                    vuRow[cx * 2 + 0] = vRow[cx];
-                    vuRow[cx * 2 + 1] = uRow[cx];
-                }
-            }
-        } else {
-            // Arbitrary stride fallback
-            for (int cy = 0; cy < chromaH; ++cy) {
-                const uint8_t* __restrict uRow = uPlane + cy * uvRowStride;
-                const uint8_t* __restrict vRow = vPlane + cy * uvRowStride;
-                uint8_t* __restrict vuRow = dstVU + cy * dstW;
-                for (int cx = 0; cx < chromaW; ++cx) {
-                    int idx = cx * uvPixelStride;
-                    vuRow[cx * 2 + 0] = vRow[idx];
-                    vuRow[cx * 2 + 1] = uRow[idx];
-                }
-            }
-        }
-    } else {
-        // Fast 1D LUT-driven path for rotation (0/90/180/270), mirror, and aspect-preserving crop/scale
-        const auto& cache = getCoordinateLuts(dstW, dstH, srcW, srcH, rotation, mirror == JNI_TRUE, zoom, panX, panY);
-        const bool swappedAxes = cache.swappedAxes;
-        const int* __restrict lutX = cache.lutX.data();
-        const int* __restrict lutY = cache.lutY.data();
-
-        if (!swappedAxes) {
-            for (int y = 0; y < dstH; ++y) {
-                const int sy = lutY[y];
-                const uint8_t* __restrict ySrcRow = yPlane + sy * yRowStride;
-                uint8_t* __restrict yOutRow = dstY + y * dstW;
-
-                for (int x = 0; x < dstW; ++x) {
-                    yOutRow[x] = ySrcRow[lutX[x]];
-                }
-
-                if ((y & 1) == 0) {
-                    const uint8_t* __restrict uSrcRow = uPlane + (sy >> 1) * uvRowStride;
-                    const uint8_t* __restrict vSrcRow = vPlane + (sy >> 1) * uvRowStride;
-                    uint8_t* __restrict vuOutRow = dstVU + (y >> 1) * dstW;
-                    for (int x = 0; x < dstW; x += 2) {
-                        const int uvIdx = (lutX[x] >> 1) * uvPixelStride;
-                        vuOutRow[x + 0] = vSrcRow[uvIdx];
-                        vuOutRow[x + 1] = uSrcRow[uvIdx];
-                    }
-                }
-            }
-        } else {
-            bool lumaHandledByNeon = false;
-#if defined(__aarch64__) || defined(__ARM_NEON__)
-            if (!mirror && zoom <= 1.001f && srcW == dstH && srcH == dstW && (rotation == 90 || rotation == 270)) {
-                lumaHandledByNeon = true;
-                const int alignedW = dstW & ~7;
-                const int alignedH = dstH & ~7;
-
-                for (int y = 0; y < alignedH; y += 8) {
-                    const int sxBase = (rotation == 270) ? (srcW - 8 - y) : y;
-                    for (int x = 0; x < alignedW; x += 8) {
-                        const int syBase = (rotation == 90) ? (srcH - 8 - x) : x;
-                        uint8x8_t r0 = vld1_u8(yPlane + (syBase + 0) * yRowStride + sxBase);
-                        uint8x8_t r1 = vld1_u8(yPlane + (syBase + 1) * yRowStride + sxBase);
-                        uint8x8_t r2 = vld1_u8(yPlane + (syBase + 2) * yRowStride + sxBase);
-                        uint8x8_t r3 = vld1_u8(yPlane + (syBase + 3) * yRowStride + sxBase);
-                        uint8x8_t r4 = vld1_u8(yPlane + (syBase + 4) * yRowStride + sxBase);
-                        uint8x8_t r5 = vld1_u8(yPlane + (syBase + 5) * yRowStride + sxBase);
-                        uint8x8_t r6 = vld1_u8(yPlane + (syBase + 6) * yRowStride + sxBase);
-                        uint8x8_t r7 = vld1_u8(yPlane + (syBase + 7) * yRowStride + sxBase);
-
-                        transpose8x8_u8(r0, r1, r2, r3, r4, r5, r6, r7);
-
-                        if (rotation == 90) {
-                            vst1_u8(dstY + (y + 0) * dstW + x, vrev64_u8(r0));
-                            vst1_u8(dstY + (y + 1) * dstW + x, vrev64_u8(r1));
-                            vst1_u8(dstY + (y + 2) * dstW + x, vrev64_u8(r2));
-                            vst1_u8(dstY + (y + 3) * dstW + x, vrev64_u8(r3));
-                            vst1_u8(dstY + (y + 4) * dstW + x, vrev64_u8(r4));
-                            vst1_u8(dstY + (y + 5) * dstW + x, vrev64_u8(r5));
-                            vst1_u8(dstY + (y + 6) * dstW + x, vrev64_u8(r6));
-                            vst1_u8(dstY + (y + 7) * dstW + x, vrev64_u8(r7));
-                        } else {
-                            vst1_u8(dstY + (y + 0) * dstW + x, r7);
-                            vst1_u8(dstY + (y + 1) * dstW + x, r6);
-                            vst1_u8(dstY + (y + 2) * dstW + x, r5);
-                            vst1_u8(dstY + (y + 3) * dstW + x, r4);
-                            vst1_u8(dstY + (y + 4) * dstW + x, r3);
-                            vst1_u8(dstY + (y + 5) * dstW + x, r2);
-                            vst1_u8(dstY + (y + 6) * dstW + x, r1);
-                            vst1_u8(dstY + (y + 7) * dstW + x, r0);
-                        }
-                    }
-                    // Remaining x columns if dstW not multiple of 8
-                    for (int row = 0; row < 8; ++row) {
-                        const int dy = y + row;
-                        const int sx = lutY[dy];
-                        uint8_t* __restrict yOutRow = dstY + dy * dstW;
-                        for (int x = alignedW; x < dstW; ++x) {
-                            yOutRow[x] = yPlane[lutX[x] * yRowStride + sx];
-                        }
-                    }
-                }
-                // Remaining y rows if dstH not multiple of 8
-                for (int y = alignedH; y < dstH; ++y) {
-                    const int sx = lutY[y];
-                    uint8_t* __restrict yOutRow = dstY + y * dstW;
-                    for (int x = 0; x < dstW; ++x) {
-                        yOutRow[x] = yPlane[lutX[x] * yRowStride + sx];
-                    }
-                }
-            }
-#endif
-            for (int y = 0; y < dstH; ++y) {
-                const int sx = lutY[y];
-                const int uvColOffset = (sx >> 1) * uvPixelStride;
-                uint8_t* __restrict yOutRow = dstY + y * dstW;
-                uint8_t* __restrict vuOutRow = ((y & 1) == 0) ? (dstVU + (y >> 1) * dstW) : nullptr;
-
-                if (!lumaHandledByNeon) {
-                    for (int x = 0; x < dstW; ++x) {
-                        const int sy = lutX[x];
-                        yOutRow[x] = yPlane[sy * yRowStride + sx];
-                        if (vuOutRow != nullptr && (x & 1) == 0) {
-                            const int uvIdx = (sy >> 1) * uvRowStride + uvColOffset;
-                            vuOutRow[x + 0] = vPlane[uvIdx];
-                            vuOutRow[x + 1] = uPlane[uvIdx];
-                        }
-                    }
-                } else if (vuOutRow != nullptr) {
-                    for (int x = 0; x < dstW; x += 2) {
-                        const int sy = lutX[x];
-                        const int uvIdx = (sy >> 1) * uvRowStride + uvColOffset;
-                        vuOutRow[x + 0] = vPlane[uvIdx];
-                        vuOutRow[x + 1] = uPlane[uvIdx];
-                    }
-                }
-            }
-        }
-    }
+    convertYuv420ToNv21(
+        yPlane, uPlane, vPlane,
+        srcW, srcH,
+        yRowStride, uvRowStride, uvPixelStride,
+        nv21, dstW, dstH,
+        rotation, mirror == JNI_TRUE, zoom, panX, panY
+    );
 
     env->ReleasePrimitiveArrayCritical(outNv21, nv21, 0);
 }

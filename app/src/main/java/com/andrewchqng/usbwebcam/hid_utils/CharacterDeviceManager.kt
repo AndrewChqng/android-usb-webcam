@@ -1,10 +1,8 @@
 package com.andrewchqng.usbwebcam.hid_utils
 
 import android.app.Application
-import android.content.Intent
 import android.os.Parcelable
 import com.topjohnwu.superuser.Shell
-import com.topjohnwu.superuser.ipc.RootService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
@@ -17,48 +15,9 @@ import com.andrewchqng.usbwebcam.settings.GadgetUserPreferences
 import com.andrewchqng.usbwebcam.shell_utils.RootStateHolder
 import timber.log.Timber
 import java.io.File
-import java.util.Locale
-import kotlin.time.Duration
-import kotlin.time.Duration.Companion.milliseconds
 
 class CharacterDeviceManager private constructor(private val application: Application) {
     private val rootStateHolder = RootStateHolder.getInstance()
-    private val mConnection = UsbGadgetServiceConnection()
-
-    @Throws(TimeoutCancellationException::class)
-    private suspend fun ensureServiceIsBound(
-        timeout: Duration = 5000.milliseconds,
-        pollInterval: Duration = 250.milliseconds
-    ) {
-        if (!mConnection.isBound) {
-            Intent(application, UsbGadgetService::class.java).also { intent ->
-                RootService.bind(intent, mConnection)
-            }
-        }
-
-        withTimeout(timeout) {
-            while (!mConnection.isBound) {
-                Timber.d("not bound yet, sleeping for a bit before trying again...")
-                delay(pollInterval)
-            }
-            Timber.d("UsbGadgetService is bound now!")
-        }
-    }
-
-    private suspend fun useService(block: suspend (UsbGadgetServiceConnection) -> Unit) {
-        try {
-            ensureServiceIsBound()
-        } catch (e: TimeoutCancellationException) {
-            Timber.e("Failed to bind service within timeout duration: $e")
-            return
-        }
-
-        block(mConnection)
-
-        if (mConnection.isBound) {
-            RootService.unbind(mConnection)
-        }
-    }
 
     suspend fun createCharacterDevices(gadgetUserPreferences: GadgetUserPreferences): String? {
         return withContext(Dispatchers.IO) {
@@ -126,65 +85,13 @@ class CharacterDeviceManager private constructor(private val application: Applic
         val resolvedHeights = if (prefs.resolvedHeights.isNotEmpty()) prefs.resolvedHeights else intArrayOf(1080, 720, 480, 360)
         val defaultIdx = prefs.defaultFrameIndex.coerceIn(1, resolvedWidths.size)
 
-        val mjpegFrames = mutableListOf<UvcFrameConfig>()
-        val yuyvFrames = mutableListOf<UvcFrameConfig>()
-        val allFpsTiers = listOf(
-            60 to 166666L,
-            30 to 333333L,
-            24 to 416666L,
-            15 to 666666L,
-            10 to 1000000L,
-            5 to 2000000L
+        val formatFrames = UvcFrameConfigBuilder.buildFormatFrames(
+            widths = resolvedWidths,
+            heights = resolvedHeights,
+            configuredMaxFps = prefs.uvcDefaultFps
         )
-        val configuredMaxFps = prefs.uvcDefaultFps.coerceIn(5, 60)
-
-        for (i in resolvedWidths.indices) {
-            val w = resolvedWidths[i]
-            val h = resolvedHeights[i]
-            val dirName = String.format(Locale.US, "f%02d_%dx%d", i + 1, w, h)
-            val pixels = w.toLong() * h
-            val maxBufSize = pixels * 2
-
-            val mjpegCapFps = minOf(configuredMaxFps, if (pixels <= 1920L * 1080L) 60 else 30)
-            val mjpegIntervals = allFpsTiers.filter { it.first <= mjpegCapFps }.map { it.second }.ifEmpty { listOf(333333L) }
-            val mjpegDefInterval = mjpegIntervals.first()
-            val mjpegMinBitRate = (pixels * 16 * 5) / 8
-            val mjpegMaxBitRate = pixels * 16 * mjpegCapFps
-            mjpegFrames.add(
-                UvcFrameConfig(
-                    dirName = dirName,
-                    width = w,
-                    height = h,
-                    minBitRate = mjpegMinBitRate,
-                    maxBitRate = mjpegMaxBitRate,
-                    maxBufSize = maxBufSize,
-                    defaultInterval = mjpegDefInterval,
-                    intervals = mjpegIntervals
-                )
-            )
-
-            val yuyvHwMaxFps = if (pixels <= 640L * 480L) 30 else if (pixels <= 1280L * 720L) 15 else 5
-            val yuyvCapFps = minOf(configuredMaxFps, yuyvHwMaxFps)
-            val yuyvIntervals = allFpsTiers.filter { it.first <= yuyvCapFps }.map { it.second }.ifEmpty { listOf(2000000L) }
-            val yuyvDefInterval = yuyvIntervals.first()
-            val yuyvMinBitRate = pixels * 16 * 5
-            val yuyvMaxBitRate = pixels * 16 * yuyvCapFps
-            yuyvFrames.add(
-                UvcFrameConfig(
-                    dirName = dirName,
-                    width = w,
-                    height = h,
-                    minBitRate = yuyvMinBitRate,
-                    maxBitRate = yuyvMaxBitRate,
-                    maxBufSize = maxBufSize,
-                    defaultInterval = yuyvDefInterval,
-                    intervals = yuyvIntervals
-                )
-            )
-        }
-
-        val mjpegFramesScript = generateFrameCommands("streaming/mjpeg/m", mjpegFrames, defaultIdx)
-        val yuyvFramesScript = generateFrameCommands("streaming/uncompressed/u", yuyvFrames, defaultIdx)
+        val mjpegFramesScript = UvcFrameConfigBuilder.generateConfigFsCommands("streaming/mjpeg/m", formatFrames.mjpegFrames, defaultIdx)
+        val yuyvFramesScript = UvcFrameConfigBuilder.generateConfigFsCommands("streaming/uncompressed/u", formatFrames.yuyvFrames, defaultIdx)
 
         val script = """
             G="$gPath"
@@ -530,87 +437,6 @@ $yuyvFramesScript
     companion object {
         const val AUTO_DETECT_VIDEO_PATH = "auto"
 
-        private data class UvcFrameConfig(
-            val dirName: String,
-            val width: Int,
-            val height: Int,
-            val minBitRate: Long,
-            val maxBitRate: Long,
-            val maxBufSize: Long,
-            val defaultInterval: Long,
-            val intervals: List<Long>
-        )
-
-        private val MJPEG_FRAME_360P = UvcFrameConfig(
-            dirName = "f1_360p", width = 640, height = 360,
-            minBitRate = 18432000L, maxBitRate = 110592000L, maxBufSize = 460800L,
-            defaultInterval = 333333L, intervals = listOf(166666L, 333333L, 666666L)
-        )
-        private val MJPEG_FRAME_480P = UvcFrameConfig(
-            dirName = "f2_480p", width = 640, height = 480,
-            minBitRate = 24576000L, maxBitRate = 147456000L, maxBufSize = 614400L,
-            defaultInterval = 333333L, intervals = listOf(166666L, 333333L, 666666L)
-        )
-        private val MJPEG_FRAME_720P = UvcFrameConfig(
-            dirName = "f3_720p", width = 1280, height = 720,
-            minBitRate = 29491200L, maxBitRate = 221184000L, maxBufSize = 1843200L,
-            defaultInterval = 333333L, intervals = listOf(166666L, 333333L, 666666L)
-        )
-        private val MJPEG_FRAME_1080P = UvcFrameConfig(
-            dirName = "f4_1080p", width = 1920, height = 1080,
-            minBitRate = 66355200L, maxBitRate = 497664000L, maxBufSize = 4147200L,
-            defaultInterval = 333333L, intervals = listOf(166666L, 333333L, 666666L)
-        )
-        private val MJPEG_FRAME_1440P = UvcFrameConfig(
-            dirName = "f5_1440p", width = 2560, height = 1440,
-            minBitRate = 117964800L, maxBitRate = 884736000L, maxBufSize = 7372800L,
-            defaultInterval = 333333L, intervals = listOf(166666L, 333333L, 666666L)
-        )
-        private val MJPEG_FRAME_4K = UvcFrameConfig(
-            dirName = "f6_4k", width = 3840, height = 2160,
-            minBitRate = 265420800L, maxBitRate = 530841600L, maxBufSize = 16588800L,
-            defaultInterval = 333333L, intervals = listOf(333333L, 666666L)
-        )
-
-        private val YUYV_FRAME_360P = UvcFrameConfig(
-            dirName = "f1_360p", width = 640, height = 360,
-            minBitRate = 36864000L, maxBitRate = 110592000L, maxBufSize = 460800L,
-            defaultInterval = 333333L, intervals = listOf(333333L, 666666L, 1000000L)
-        )
-        private val YUYV_FRAME_480P = UvcFrameConfig(
-            dirName = "f2_480p", width = 640, height = 480,
-            minBitRate = 49152000L, maxBitRate = 147456000L, maxBufSize = 614400L,
-            defaultInterval = 333333L, intervals = listOf(333333L, 666666L, 1000000L)
-        )
-        private val YUYV_FRAME_720P = UvcFrameConfig(
-            dirName = "f3_720p", width = 1280, height = 720,
-            minBitRate = 73728000L, maxBitRate = 221184000L, maxBufSize = 1843200L,
-            defaultInterval = 666666L, intervals = listOf(666666L, 1000000L, 2000000L)
-        )
-        private val YUYV_FRAME_1080P = UvcFrameConfig(
-            dirName = "f4_1080p", width = 1920, height = 1080,
-            minBitRate = 165888000L, maxBitRate = 497664000L, maxBufSize = 4147200L,
-            defaultInterval = 2000000L, intervals = listOf(2000000L)
-        )
-
-        private fun generateFrameCommands(formatSubpath: String, frames: List<UvcFrameConfig>, defaultFrameIndex: Int): String {
-            return buildString {
-                for (f in frames) {
-                    val p = "\${UVC}/$formatSubpath/${f.dirName}"
-                    val intervalsFormatted = f.intervals.joinToString("""\n""") + """\n"""
-                    appendLine("            mkdir -p \"$p\"")
-                    appendLine("            echo ${f.width} > \"$p/wWidth\"")
-                    appendLine("            echo ${f.height} > \"$p/wHeight\"")
-                    appendLine("            echo ${f.minBitRate} > \"$p/dwMinBitRate\"")
-                    appendLine("            echo ${f.maxBitRate} > \"$p/dwMaxBitRate\"")
-                    appendLine("            echo ${f.maxBufSize} > \"$p/dwMaxVideoFrameBufferSize\"")
-                    appendLine("            echo ${f.defaultInterval} > \"$p/dwDefaultFrameInterval\"")
-                    appendLine("            printf \"$intervalsFormatted\" > \"$p/dwFrameInterval\"")
-                }
-                appendLine("            echo $defaultFrameIndex > \"\${UVC}/$formatSubpath/bDefaultFrameIndex\" 2>/dev/null || true")
-            }
-        }
-
         object DevicePaths {
             val DEFAULT_UVC_DEVICE_PATH = UvcVideoDevicePath(AUTO_DETECT_VIDEO_PATH)
 
@@ -665,3 +491,7 @@ interface DevicePath {
 @JvmInline
 @Parcelize
 value class UvcVideoDevicePath(override val path: String) : DevicePath, Parcelable
+
+@JvmInline
+@Parcelize
+value class UsbGadgetPath(val path: String) : Parcelable

@@ -16,9 +16,8 @@
 # Keep all webcam controllers and foreground services
 -keep class com.andrewchqng.usbwebcam.webcam.** { *; }
 
-# Keep libsu RootService and IPC classes
+# Keep libsu classes
 -keep class com.topjohnwu.superuser.** { *; }
--keep class com.andrewchqng.usbwebcam.hid_utils.UsbGadgetService { *; }
 -keep class com.andrewchqng.usbwebcam.hid_utils.** { *; }
 
 # Keep all settings, preferences, and data models

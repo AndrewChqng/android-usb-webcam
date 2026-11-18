@@ -1,5 +1,6 @@
 package com.andrewchqng.usbwebcam.troubleshooting
 
+import android.content.ClipData
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -215,7 +216,7 @@ private fun GadgetStatusItem(
             confirmButton = {
                 TextButton(
                     onClick = {
-                        clipboardManager.text = extraInfo
+                        clipboardManager.setPrimaryClip(ClipData.newPlainText(title, extraInfo))
                         //isShowingInfoAlert = false // TODO: should I close the dialog when text is copied or not?
                     }
                 ) {

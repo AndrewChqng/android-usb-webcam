@@ -6,7 +6,9 @@ add_link_options("-Wl,--build-id=none")
 add_compile_options(-O3 -ffast-math -Wall -Wextra -Wno-unused-parameter)
 
 add_library(${CMAKE_PROJECT_NAME} SHARED
-        uvc_gadget.cpp)
+        uvc_gadget.cpp
+        uvc_protocol.cpp
+        yuv_convert.cpp)
 
 target_link_libraries(${CMAKE_PROJECT_NAME}
         android

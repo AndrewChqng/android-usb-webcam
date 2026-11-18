@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v3.2.5] - 2026-11-18
+
+> **AI Attribution & Disclaimer**: Implemented with assistance from **Antigravity (Google DeepMind)** via modular architecture decomposition, API modernization, and automated unit test authoring. Code is experimental; hardware interaction with Linux USB ConfigFS, DWC3 drivers, Camera2 HAL, and V4L2 requires root (`su`) and direct kernel ioctls.
+
+### Changed & Refactored
+- **Dead Code & Dependency Cleanup**: Removed legacy bound root service (`UsbGadgetService`, `UsbGadgetServiceConnection`), dropped unused `libsu-service` dependency and ProGuard rule, and extracted UVC ConfigFS frame descriptor generation into `UvcFrameConfigBuilder`.
+- **Native C++ Modularization**: Split monolithic `uvc_gadget.cpp` into focused units (`uvc_gadget.h`, `uvc_protocol.cpp`, `yuv_convert.cpp`, `uvc_gadget.cpp`) wired via `CMakeLists.txt`.
+- **Web Remote Asset Separation**: Extracted embedded HTML/CSS/JS out of `WebcamWebServer.kt` into `app/src/main/assets/web/` (`index.html`, `styles.css`, `app.js`), lazily loaded and served from Android assets.
+- **Camera2 & Webcam Domain Decomposition**: Extracted models (`WebcamModels.kt`) and pure Camera2/PTZ/pacing/USB bus math (`Camera2ConfigHelper.kt`) out of `WebcamController.kt`, migrated API 28+ capture sessions to `SessionConfiguration`, and fixed constant-FPS range tie-breaking when sensor max FPS is below requested target FPS.
+- **UI Modularization & Android 15 Hygiene**: Split `MainScreen.kt` into 6 dedicated card composables under `ui/main/`, replaced deprecated clipboard and status bar APIs, enabled `enableEdgeToEdge()`, bumped `targetSdk = 35`, and added optional `keystore.properties`/env release signing with `debug` fallback.
+
+### Added
+- **JVM Unit Test Suite**: Added JUnit unit tests covering Camera2 selection/PTZ/pacing/USB math (`Camera2ConfigHelperTest`), resolution parsing (`ResolutionItemTest`), and UVC ConfigFS generation (`UvcFrameConfigBuilderTest`).
+
+---
+
 ## [v3.2.4] - 2026-11-18
 
 > **AI Attribution & Disclaimer**: Implemented with assistance from **Antigravity (Google DeepMind)**. Code is experimental; hardware interaction with Linux USB ConfigFS, DWC3 drivers, Camera2 HAL, and V4L2 requires root (`su`) and direct kernel ioctls.

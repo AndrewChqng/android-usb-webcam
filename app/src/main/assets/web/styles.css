@@ -1,0 +1,83 @@
+:root {
+  --bg: #121214;
+  --card-bg: #1a1a20;
+  --card-border: #2c2c38;
+  --text-main: #f0f0f4;
+  --text-muted: #9e9ea8;
+  --accent: #7c4dff;
+  --accent-hover: #966eff;
+  --accent-light: rgba(124, 77, 255, 0.15);
+  --success: #00e676;
+  --danger: #ff5252;
+  --cyan: #00e5ff;
+  --radius: 12px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif; }
+body { background: var(--bg); color: var(--text-main); line-height: 1.5; padding: 16px; min-height: 100vh; }
+.container { max-width: 1000px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+
+/* Top Header */
+header { display: flex; justify-content: space-between; align-items: center; background: var(--card-bg); border: 1px solid var(--card-border); padding: 16px 20px; border-radius: var(--radius); flex-wrap: wrap; gap: 12px; }
+.header-title { display: flex; align-items: center; gap: 10px; }
+.header-title h1 { font-size: 1.25rem; font-weight: 700; color: #fff; }
+.badge { font-size: 0.75rem; font-weight: 600; padding: 4px 10px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.5px; }
+.badge.idle { background: #2f2f3a; color: var(--text-muted); }
+.badge.ready { background: rgba(0, 229, 255, 0.15); color: var(--cyan); border: 1px solid var(--cyan); }
+.badge.streaming { background: rgba(0, 230, 118, 0.15); color: var(--success); border: 1px solid var(--success); }
+
+/* Guide Banner */
+.adb-banner { background: #1f1b2d; border: 1px solid #4a347f; border-radius: var(--radius); padding: 14px 18px; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.adb-text { font-size: 0.85rem; color: #d0c8f5; }
+.adb-cmd { font-family: monospace; background: #12101c; color: var(--cyan); padding: 4px 8px; border-radius: 6px; font-weight: 600; border: 1px solid #3d2b6b; user-select: all; }
+.btn-copy { background: var(--accent); color: #fff; border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; font-weight: 600; transition: background 0.15s; }
+.btn-copy:hover { background: var(--accent-hover); }
+
+/* Grid Layout */
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 16px; }
+.card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--radius); padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+.card-title { font-size: 1rem; font-weight: 700; color: #fff; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--card-border); padding-bottom: 10px; }
+
+/* Telemetry row */
+.stat-row { display: flex; justify-content: space-between; font-size: 0.85rem; border-bottom: 1px dashed #282835; padding: 4px 0; }
+.stat-label { color: var(--text-muted); }
+.stat-val { font-weight: 600; color: #fff; font-family: monospace; }
+
+/* Controls */
+.control-group { display: flex; flex-direction: column; gap: 6px; }
+.control-header { display: flex; justify-content: space-between; font-size: 0.85rem; font-weight: 600; }
+.control-header span:last-child { color: var(--accent); font-family: monospace; }
+
+input[type=range] { width: 100%; height: 6px; background: #2f2f3d; border-radius: 3px; outline: none; -webkit-appearance: none; cursor: pointer; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: var(--accent); cursor: pointer; box-shadow: 0 0 6px rgba(124, 77, 255, 0.5); }
+
+/* Toggle switch */
+.toggle-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; padding: 2px 0; }
+.switch { position: relative; display: inline-block; width: 38px; height: 20px; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #2f2f3a; border-radius: 20px; transition: .2s; }
+.slider:before { position: absolute; content: ""; height: 14px; width: 14px; left: 3px; bottom: 3px; background-color: white; border-radius: 50%; transition: .2s; }
+input:checked + .slider { background-color: var(--accent); }
+input:checked + .slider:before { transform: translateX(18px); }
+
+/* Button groups */
+.btn-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.pill-btn { background: #252530; color: var(--text-muted); border: 1px solid #363645; padding: 5px 12px; border-radius: 6px; font-size: 0.8rem; cursor: pointer; transition: all 0.15s; font-weight: 500; }
+.pill-btn:hover { background: #323242; color: #fff; }
+.pill-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* D-Pad */
+.dpad-container { display: flex; flex-direction: column; align-items: center; gap: 6px; margin: 4px 0; }
+.dpad-row { display: flex; gap: 6px; }
+.dpad-btn { width: 50px; height: 40px; background: #252532; border: 1px solid #3b3b4f; border-radius: 6px; color: #fff; font-size: 1.1rem; cursor: pointer; display: flex; align-items: center; justify-content: center; user-select: none; transition: background 0.1s; }
+.dpad-btn:active { background: var(--accent); }
+.dpad-center { width: 50px; height: 40px; background: #2b2b3a; border: 1px solid #4a4a60; font-size: 0.75rem; font-weight: 600; color: #bbb; border-radius: 6px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.dpad-center:hover { background: #3b3b50; color: #fff; }
+
+/* Action Buttons */
+.btn-primary { background: var(--accent); color: #fff; border: none; padding: 10px 16px; border-radius: 8px; font-size: 0.9rem; font-weight: 600; cursor: pointer; transition: background 0.15s; }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-danger { background: var(--danger); color: #fff; border: none; padding: 10px 16px; border-radius: 8px; font-size: 0.9rem; font-weight: 600; cursor: pointer; }
+.btn-outline { background: transparent; color: var(--text-muted); border: 1px solid var(--card-border); padding: 8px 12px; border-radius: 6px; font-size: 0.8rem; cursor: pointer; transition: all 0.15s; }
+.btn-outline:hover { background: #22222d; color: #fff; }
+
+select { background: #252530; color: #fff; border: 1px solid #363645; padding: 6px 10px; border-radius: 6px; font-size: 0.85rem; width: 100%; outline: none; }

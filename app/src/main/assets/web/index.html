@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Android USB Webcam Control</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="header-title">
+        <span style="font-size: 1.5rem;">📱</span>
+        <div>
+          <h1>Android USB Webcam Studio</h1>
+          <span id="txt-substatus" style="font-size: 0.8rem; color: var(--text-muted);">ConfigFS UVC + V4L2 Hardware Controller</span>
+        </div>
+      </div>
+      <div style="display: flex; gap: 10px; align-items: center;">
+        <span id="badge-status" class="badge idle">Idle</span>
+        <button id="btn-restart-webcam" class="btn-outline" style="display:none;" onclick="postAction('restart')">Restart</button>
+        <button id="btn-toggle-webcam" class="btn-primary" onclick="toggleWebcam()">Start Webcam</button>
+      </div>
+    </header>
+
+    <div class="adb-banner">
+      <div class="adb-text">
+        ⚡ <b>Direct PC USB Connection:</b> In terminal on your PC, run: <span class="adb-cmd" id="adb-code">adb forward tcp:8080 tcp:8080</span>
+      </div>
+      <button class="btn-copy" onclick="copyAdbCmd()">Copy ADB Command</button>
+    </div>
+
+    <div class="grid">
+      <!-- Live Telemetry Card -->
+      <div class="card">
+        <div class="card-title">
+          <span>📊 Live Stream Telemetry</span>
+          <span id="txt-fps-pill" style="font-size: 0.75rem; color: var(--cyan); font-family: monospace;">0.0 FPS</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Negotiated Mode</span>
+          <span class="stat-val" id="stat-mode">Idle</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Stream Resolution</span>
+          <span class="stat-val" id="stat-res">1280x720</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Measured Delivery FPS</span>
+          <span class="stat-val" id="stat-fps">0.0 fps</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Frame Latency (Encode)</span>
+          <span class="stat-val" id="stat-lat">0.0 ms</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Average Frame Size</span>
+          <span class="stat-val" id="stat-size">0.0 KB</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">USB Max Packet Payload</span>
+          <span class="stat-val" id="stat-pkt">3072 B</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">V4L2 Device Node</span>
+          <span class="stat-val" id="stat-node">/dev/video2</span>
+        </div>
+      </div>
+
+      <!-- PTZ Card -->
+      <div class="card">
+        <div class="card-title">
+          <span>🔍 Pan, Tilt & Zoom (PTZ)</span>
+          <button class="btn-outline" style="padding: 2px 8px;" onclick="recenterPan()">Recenter</button>
+        </div>
+
+        <div class="toggle-row">
+          <span>Native Camera2 API PTZ</span>
+          <label class="switch">
+            <input type="checkbox" id="chk-native-ptz" onchange="postSettings({useNativeCamera2Ptz: this.checked})">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="control-group">
+          <div class="control-header">
+            <span>Digital Zoom</span>
+            <span id="lbl-zoom">1.0x</span>
+          </div>
+          <input type="range" id="rng-zoom" min="1.0" max="4.0" step="0.1" value="1.0" oninput="onZoomInput(this.value)">
+          <div class="btn-row" style="margin-top: 4px;">
+            <button class="pill-btn" onclick="setZoomVal(1.0)">1.0x</button>
+            <button class="pill-btn" onclick="setZoomVal(1.5)">1.5x</button>
+            <button class="pill-btn" onclick="setZoomVal(2.0)">2.0x</button>
+            <button class="pill-btn" onclick="setZoomVal(3.0)">3.0x</button>
+            <button class="pill-btn" onclick="setZoomVal(4.0)">Max</button>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <div class="control-header">
+            <span>Horizontal Pan (X)</span>
+            <span id="lbl-panx">0%</span>
+          </div>
+          <input type="range" id="rng-panx" min="-1.0" max="1.0" step="0.02" value="0.0" oninput="onPanXInput(this.value)">
+        </div>
+
+        <div class="control-group">
+          <div class="control-header">
+            <span>Vertical Tilt (Y)</span>
+            <span id="lbl-pany">0%</span>
+          </div>
+          <input type="range" id="rng-pany" min="-1.0" max="1.0" step="0.02" value="0.0" oninput="onPanYInput(this.value)">
+        </div>
+
+        <div class="dpad-container">
+          <div class="dpad-row">
+            <button class="dpad-btn" onclick="stepPan(0, -0.1)" title="Tilt Up">▲</button>
+          </div>
+          <div class="dpad-row">
+            <button class="dpad-btn" onclick="stepPan(-0.1, 0)" title="Pan Left">◀</button>
+            <button class="dpad-center" onclick="recenterPan()" title="Center">Center</button>
+            <button class="dpad-btn" onclick="stepPan(0.1, 0)" title="Pan Right">▶</button>
+          </div>
+          <div class="dpad-row">
+            <button class="dpad-btn" onclick="stepPan(0, 0.1)" title="Tilt Down">▼</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Camera Lens & Video Encoding Card -->
+      <div class="card">
+        <div class="card-title">
+          <span>📷 Camera Lens, Resolution & Orientation</span>
+        </div>
+
+        <div class="control-group">
+          <div class="control-header">
+            <span id="lbl-res-profile">Max Resolution: 1080p</span>
+            <span id="lbl-res-info" style="font-size: 11px; color: var(--text-muted);">(Click Restart to apply)</span>
+          </div>
+          <input type="range" id="rng-max-res" min="0" max="6" step="1" value="4" onchange="onMaxResSlider(this.value)" oninput="onMaxResPreview(this.value)">
+          <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); margin-top: 2px;">
+            <span>240</span><span>360</span><span>480</span><span>720</span><span>1080</span><span>1440</span><span>4K</span>
+          </div>
+          <details style="margin-top: 8px; font-size: 13px;">
+            <summary style="cursor: pointer; color: var(--accent); font-weight: 500;">
+              Manage Custom Set (<span id="res-active-count">0</span> active, Default: <span id="res-active-default">-</span>)
+            </summary>
+            <div style="margin-top: 8px; padding: 10px; background: rgba(255,255,255,0.03); border-radius: 8px;">
+              <div style="display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 8px;">
+                <div style="display: flex; gap: 6px; align-items: center;">
+                  <label style="font-size: 11px; color: var(--text-muted);">Aspect Ratio:</label>
+                  <select id="sel-aspect-filter" onchange="renderResolutionList()" style="background: var(--bg-card); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; width: auto;">
+                    <option value="All">All</option>
+                    <option value="16:9">16:9</option>
+                    <option value="9:16">9:16</option>
+                    <option value="4:3">4:3</option>
+                    <option value="1:1">1:1</option>
+                    <option value="Other">Other</option>
+                  </select>
+                </div>
+                <div style="display: flex; gap: 6px;">
+                  <button class="pill-btn" onclick="selectAllFilteredRes()" style="padding: 2px 8px; font-size: 11px;">Select All</button>
+                  <button class="pill-btn" onclick="deselectAllFilteredRes()" style="padding: 2px 8px; font-size: 11px;">Deselect All</button>
+                </div>
+              </div>
+              <div id="resolution-items-list" style="max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px;"></div>
+              <div style="display: flex; gap: 6px; align-items: center; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);">
+                <input type="number" id="inp-custom-w" placeholder="Width" style="width: 70px; background: var(--bg-card); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px;">
+                <span>×</span>
+                <input type="number" id="inp-custom-h" placeholder="Height" style="width: 70px; background: var(--bg-card); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px;">
+                <button class="pill-btn" onclick="addCustomRes()" style="padding: 3px 8px; font-size: 12px;">+ Add Custom</button>
+              </div>
+            </div>
+          </details>
+        </div>
+
+        <div class="control-group">
+          <div class="control-header"><span>Lens Selection</span></div>
+          <div class="btn-row" id="cam-lenses-container"></div>
+        </div>
+
+        <div class="control-group">
+          <div class="control-header"><span>Rotation</span></div>
+          <div class="btn-row">
+            <button class="pill-btn" id="rot-0" onclick="setRotation(0)">0°</button>
+            <button class="pill-btn" id="rot-90" onclick="setRotation(90)">90°</button>
+            <button class="pill-btn" id="rot-180" onclick="setRotation(180)">180°</button>
+            <button class="pill-btn" id="rot-270" onclick="setRotation(270)">270°</button>
+          </div>
+        </div>
+
+        <div class="toggle-row">
+          <span>Mirror Horizontally</span>
+          <label class="switch">
+            <input type="checkbox" id="chk-mirror" onchange="postSettings({mirror: this.checked})">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="control-group">
+          <div class="control-header">
+            <span>MJPEG Compression Quality</span>
+            <span id="lbl-quality">82%</span>
+          </div>
+          <input type="range" id="rng-quality" min="1" max="100" step="1" value="82" oninput="onQualityInput(this.value)">
+        </div>
+
+        <div class="control-group">
+          <div class="control-header"><span>Target FPS Cap</span></div>
+          <div class="btn-row">
+            <button class="pill-btn" id="fpscap-0" onclick="setFpsCap(0)">Auto</button>
+            <button class="pill-btn" id="fpscap-60" onclick="setFpsCap(60)">60</button>
+            <button class="pill-btn" id="fpscap-30" onclick="setFpsCap(30)">30</button>
+            <button class="pill-btn" id="fpscap-24" onclick="setFpsCap(24)">24</button>
+            <button class="pill-btn" id="fpscap-15" onclick="setFpsCap(15)">15</button>
+            <button class="pill-btn" id="fpscap-10" onclick="setFpsCap(10)">10</button>
+            <button class="pill-btn" id="fpscap-5" onclick="setFpsCap(5)">5</button>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <div class="control-header"><span>V4L2 Queue Depth</span></div>
+          <div class="btn-row">
+            <button class="pill-btn" id="buf-1" onclick="setBufDepth(1)">1 buf (Low Latency)</button>
+            <button class="pill-btn" id="buf-2" onclick="setBufDepth(2)">2 bufs (Balanced)</button>
+            <button class="pill-btn" id="buf-3" onclick="setBufDepth(3)">3 bufs (Smooth)</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ISP, Focus & Lighting Card -->
+      <div class="card">
+        <div class="card-title">
+          <span>⚙️ Camera2 ISP & Lighting</span>
+          <button class="btn-outline" style="padding: 2px 8px;" onclick="resetIsp()">Reset ISP</button>
+        </div>
+
+        <div class="toggle-row">
+          <span>Continuous Autofocus</span>
+          <label class="switch">
+            <input type="checkbox" id="chk-af" onchange="postSettings({autoFocus: this.checked})">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="toggle-row">
+          <span>Constant Framerate (AE Priority)</span>
+          <label class="switch">
+            <input type="checkbox" id="chk-constfps" onchange="postSettings({lockConstantFps: this.checked})">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="toggle-row">
+          <span>Video Stabilization (EIS)</span>
+          <label class="switch">
+            <input type="checkbox" id="chk-eis" onchange="postSettings({videoStabilization: this.checked})">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="control-group">
+          <div class="control-header">
+            <span>Exposure EV</span>
+            <span id="lbl-ev">0.0 EV</span>
+          </div>
+          <input type="range" id="rng-ev" min="-2.0" max="2.0" step="0.1" value="0.0" oninput="onEvInput(this.value)">
+        </div>
+
+        <div class="toggle-row">
+          <span>Lock Exposure (AE Lock)</span>
+          <label class="switch">
+            <input type="checkbox" id="chk-aelock" onchange="postSettings({aeLock: this.checked})">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="toggle-row">
+          <span>Studio Quality ISP (Noise Reduction)</span>
+          <label class="switch">
+            <input type="checkbox" id="chk-studio" onchange="postSettings({studioQuality: this.checked})">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="toggle-row" id="row-torch" style="display: none;">
+          <span>LED Fill Light / Torch</span>
+          <label class="switch">
+            <input type="checkbox" id="chk-torch" onchange="postSettings({torch: this.checked})">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="control-group">
+          <div class="control-header"><span>White Balance (AWB)</span></div>
+          <select id="sel-awb" onchange="postSettings({awbMode: parseInt(this.value)})">
+            <option value="1">Auto</option>
+            <option value="5">Daylight (5500K)</option>
+            <option value="6">Cloudy (6500K)</option>
+            <option value="2">Incandescent (2800K)</option>
+            <option value="3">Fluorescent (4000K)</option>
+          </select>
+        </div>
+
+        <div class="toggle-row">
+          <span>Lock White Balance (AWB Lock)</span>
+          <label class="switch">
+            <input type="checkbox" id="chk-awblock" onchange="postSettings({awbLock: this.checked})">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="control-group">
+          <div class="control-header"><span>Anti-Banding / Anti-Flicker</span></div>
+          <select id="sel-ab" onchange="postSettings({antiBandingMode: parseInt(this.value)})">
+            <option value="3">Auto</option>
+            <option value="1">50 Hz (UK / Europe / Asia)</option>
+            <option value="2">60 Hz (US / Japan)</option>
+            <option value="0">Off</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

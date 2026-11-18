@@ -13,6 +13,8 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
+import android.hardware.camera2.params.OutputConfiguration
+import android.hardware.camera2.params.SessionConfiguration
 import android.media.ImageReader
 import android.os.Build
 import android.os.Handler
@@ -36,89 +38,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import timber.log.Timber
-import java.io.OutputStream
 import java.nio.ByteBuffer
 import kotlin.math.abs
 import kotlin.math.roundToInt
-
-data class CameraLensInfo(
-    val cameraId: String,
-    val label: String,
-    val isFrontFacing: Boolean,
-    val sensorOrientation: Int,
-    val focalLengthMm: Float,
-    val maxZoom: Float = 4.0f,
-    val hasFlash: Boolean = false,
-    val supportsFreeformCrop: Boolean = false
-)
-
-data class WebcamStreamState(
-    val isGadgetActive: Boolean = false,
-    val videoNodePath: String? = null,
-    val isUvcLoopRunning: Boolean = false,
-    val isHostConnected: Boolean = false,
-    val isHostStreaming: Boolean = false,
-    val negotiatedFormat: String = "Idle",
-    val negotiatedWidth: Int = 1280,
-    val negotiatedHeight: Int = 720,
-    val negotiatedFps: Int = 30,
-    val measuredFps: Float = 0f,
-    val avgEncodeTimeMs: Float = 0f,
-    val avgFrameSizeKb: Float = 0f,
-    val boundMaxPacket: Int = 3072,
-    val selectedCameraId: String = "0",
-    val availableCameras: List<CameraLensInfo> = emptyList(),
-    val rotationDegrees: Int = 0,
-    val mirrorHorizontal: Boolean = false,
-    val jpegQuality: Int = 82,
-    val maxInFlightBuffers: Int = 2,
-    val targetFpsCap: Int = 0, // 0 = Auto (Host negotiated), or 60 / 30 / 15
-    val autoFocusEnabled: Boolean = true,
-    val lockConstantFps: Boolean = true,
-    val videoStabilization: Boolean = false,
-    val zoomRatio: Float = 1.0f,
-    val panX: Float = 0.0f, // -1.0f (left) to 1.0f (right), 0.0f = centered
-    val panY: Float = 0.0f, // -1.0f (top) to 1.0f (bottom), 0.0f = centered
-    val maxZoom: Float = 4.0f,
-    val activeCameraSupportsFreeformCrop: Boolean = false,
-    val appliedCropRegionDesc: String = "",
-    val useNativeCamera2Ptz: Boolean = false,
-    val exposureEv: Float = 0.0f,
-    val awbMode: Int = 1, // CaptureRequest.CONTROL_AWB_MODE_AUTO
-    val awbLock: Boolean = false,
-    val aeLock: Boolean = false,
-    val antiBandingMode: Int = 3, // CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO
-    val torchEnabled: Boolean = false,
-    val studioQualityProcessing: Boolean = false,
-    val isPreviewEnabled: Boolean = false,
-    val lastError: String? = null
-)
-
-/**
- * Zero-allocation OutputStream backed by a direct ByteBuffer so YuvImage.compressToJpeg
- * writes straight into native-accessible memory with zero GC churn.
- */
-private class DirectByteBufferOutputStream(private val buffer: ByteBuffer) : OutputStream() {
-    fun reset() {
-        buffer.clear()
-    }
-
-    val size: Int
-        get() = buffer.position()
-
-    override fun write(b: Int) {
-        if (buffer.hasRemaining()) {
-            buffer.put(b.toByte())
-        }
-    }
-
-    override fun write(b: ByteArray, off: Int, len: Int) {
-        val count = minOf(len, buffer.remaining())
-        if (count > 0) {
-            buffer.put(b, off, count)
-        }
-    }
-}
 
 class WebcamController private constructor(private val application: Application) : UvcEventCallback {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -643,29 +565,12 @@ class WebcamController private constructor(private val application: Application)
             val chars = cameraManager.getCameraCharacteristics(cameraId)
             val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             val sizes = map?.getOutputSizes(ImageFormat.YUV_420_888) ?: return Size(targetW, targetH)
-
-            val reqW = maxOf(targetW, targetH)
-            val reqH = minOf(targetW, targetH)
-
-            // Direct 1:1 sensor match first (either direct orientation or rotated) with no scaler downscaling
-            sizes.firstOrNull { (it.width == targetW && it.height == targetH) || (it.width == reqW && it.height == reqH) }?.let { return it }
-
-            // Match 4K UHD or 1440p QHD if requested
-            if (reqW >= 3840 && reqH >= 2160) {
-                sizes.firstOrNull { it.width == 3840 && it.height == 2160 }?.let { return it }
-            } else if (reqW >= 2560 && reqH >= 1440) {
-                sizes.firstOrNull { it.width == 2560 && it.height == 1440 }?.let { return it }
-                    ?: sizes.firstOrNull { it.width == 3840 && it.height == 2160 }?.let { return it }
-            }
-
-            // Smallest sensor resolution >= requested size to maximize efficiency and avoid unnecessary downscaling
-            val candidates = sizes.filter { it.width >= reqW && it.height >= reqH }
-            if (candidates.isNotEmpty()) {
-                return candidates.minByOrNull { it.width.toLong() * it.height } ?: candidates.first()
-            }
-
-            // Otherwise closest matching resolution
-            sizes.minByOrNull { abs(it.width - reqW) + abs(it.height - reqH) } ?: Size(targetW, targetH)
+            val selected = Camera2ConfigHelper.selectOptimalCaptureDimensions(
+                availableSizes = sizes.map { Dimensions(it.width, it.height) },
+                targetW = targetW,
+                targetH = targetH
+            )
+            Size(selected.width, selected.height)
         }.getOrDefault(Size(targetW, targetH))
     }
 
@@ -673,16 +578,12 @@ class WebcamController private constructor(private val application: Application)
         return runCatching {
             val chars = cameraManager.getCameraCharacteristics(cameraId)
             val ranges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: return null
-            if (lockConstant) {
-                ranges.firstOrNull { it.lower == desiredFps && it.upper == desiredFps }
-                    ?: ranges.filter { it.upper == desiredFps }.maxByOrNull { it.lower }
-                    ?: ranges.filter { it.upper >= desiredFps }.minByOrNull { it.upper - it.lower }
-                    ?: ranges.maxByOrNull { it.upper }
-            } else {
-                ranges.filter { it.upper == desiredFps }.minByOrNull { it.lower }
-                    ?: ranges.firstOrNull { it.upper >= desiredFps }
-                    ?: ranges.maxByOrNull { it.upper }
-            }
+            val chosen = Camera2ConfigHelper.selectFpsRange(
+                availableRanges = ranges.map { FpsRange(it.lower, it.upper) },
+                desiredFps = desiredFps,
+                lockConstant = lockConstant
+            ) ?: return null
+            Range(chosen.lower, chosen.upper)
         }.getOrNull()
     }
 
@@ -767,7 +668,7 @@ class WebcamController private constructor(private val application: Application)
         camId: String,
         s: WebcamStreamState
     ) {
-        val effectiveFps = if (s.targetFpsCap > 0) minOf(s.negotiatedFps, s.targetFpsCap) else s.negotiatedFps
+        val effectiveFps = Camera2ConfigHelper.computeEffectiveFps(s.negotiatedFps, s.targetFpsCap)
 
         // ISP processing quality mode: Fast low-latency vs Studio high-quality
         if (s.studioQualityProcessing) {
@@ -866,60 +767,19 @@ class WebcamController private constructor(private val application: Application)
 
     private fun computeCamera2CropRegion(chars: CameraCharacteristics, s: WebcamStreamState): Rect? {
         val activeRect = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return null
-        val activeW = activeRect.width()
-        val activeH = activeRect.height()
-        if (activeW <= 0 || activeH <= 0) return null
-
         val capSize = activeCaptureSize ?: Size(s.negotiatedWidth.coerceAtLeast(1), s.negotiatedHeight.coerceAtLeast(1))
-        val capW = maxOf(capSize.width, capSize.height)
-        val capH = minOf(capSize.width, capSize.height)
-        val reqAspectW = if (activeW >= activeH) capW else capH
-        val reqAspectH = if (activeW >= activeH) capH else capW
-
-        var baseW = activeW
-        var baseH = activeH
-        if (activeW.toLong() * reqAspectH > activeH.toLong() * reqAspectW) {
-            baseW = ((activeH.toLong() * reqAspectW) / reqAspectH).toInt()
-        } else if (activeW.toLong() * reqAspectH < activeH.toLong() * reqAspectW) {
-            baseH = ((activeW.toLong() * reqAspectH) / reqAspectW).toInt()
-        }
-
         val maxDigitalZoom = (chars.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: s.maxZoom).coerceAtLeast(1.0f)
-        val zoom = s.zoomRatio.coerceIn(1.0f, maxDigitalZoom)
-        val cropW = ((baseW / zoom).roundToInt().coerceIn(64, activeW)) and 1.inv()
-        val cropH = ((baseH / zoom).roundToInt().coerceIn(64, activeH)) and 1.inv()
-
-        val userX = if (s.mirrorHorizontal) -s.panX else s.panX
-        val userY = s.panY
-        var sensorPanX = userX
-        var sensorPanY = userY
-        when (s.rotationDegrees) {
-            90 -> {
-                sensorPanX = userY
-                sensorPanY = -userX
-            }
-            180 -> {
-                sensorPanX = -userX
-                sensorPanY = -userY
-            }
-            270 -> {
-                sensorPanX = -userY
-                sensorPanY = userX
-            }
-        }
-
-        val maxPanX = (activeW - cropW).coerceAtLeast(0)
-        val maxPanY = (activeH - cropH).coerceAtLeast(0)
-        val normX = (sensorPanX.coerceIn(-1f, 1f) + 1f) * 0.5f
-        val normY = (sensorPanY.coerceIn(-1f, 1f) + 1f) * 0.5f
-
-        val rawLeft = activeRect.left + (normX * maxPanX).roundToInt()
-        val rawTop = activeRect.top + (normY * maxPanY).roundToInt()
-        val clampedLeft = rawLeft.coerceIn(activeRect.left, activeRect.right - cropW)
-        val clampedTop = rawTop.coerceIn(activeRect.top, activeRect.bottom - cropH)
-        val left = clampedLeft - ((clampedLeft - activeRect.left) and 1)
-        val top = clampedTop - ((clampedTop - activeRect.top) and 1)
-        return Rect(left, top, left + cropW, top + cropH)
+        val region = Camera2ConfigHelper.computeCropRegion(
+            activeRegion = CropRegion(activeRect.left, activeRect.top, activeRect.right, activeRect.bottom),
+            captureSize = Dimensions(capSize.width, capSize.height),
+            zoomRatio = s.zoomRatio,
+            maxDigitalZoom = maxDigitalZoom,
+            panX = s.panX,
+            panY = s.panY,
+            rotationDegrees = s.rotationDegrees,
+            mirrorHorizontal = s.mirrorHorizontal
+        )
+        return Rect(region.left, region.top, region.right, region.bottom)
     }
 
     @Synchronized
@@ -968,8 +828,7 @@ class WebcamController private constructor(private val application: Application)
                 applyCameraParameters(this, camId, s.copy(negotiatedFps = targetFps))
             }
 
-            @Suppress("DEPRECATION")
-            camera.createCaptureSession(surfaces, object : CameraCaptureSession.StateCallback() {
+            val stateCallback = object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
                     captureSession = session
                     try {
@@ -983,7 +842,21 @@ class WebcamController private constructor(private val application: Application)
                     Timber.e("CameraCaptureSession configuration failed")
                     _state.update { it.copy(lastError = "Camera session config failed") }
                 }
-            }, handler)
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val outputConfigs = surfaces.map { OutputConfiguration(it) }
+                val sessionConfig = SessionConfiguration(
+                    SessionConfiguration.SESSION_REGULAR,
+                    outputConfigs,
+                    { command -> handler.post(command) },
+                    stateCallback
+                )
+                camera.createCaptureSession(sessionConfig)
+            } else {
+                @Suppress("DEPRECATION")
+                camera.createCaptureSession(surfaces, stateCallback, handler)
+            }
         } catch (e: Exception) {
             Timber.e(e, "Exception creating capture session")
         }
@@ -999,18 +872,9 @@ class WebcamController private constructor(private val application: Application)
         val frameTimestampNs = image.timestamp.takeIf { it > 0L } ?: startNs
 
         // 1. Pacing against effective FPS only when hardware FPS range exceeds target FPS
-        val effectiveFps = if (currentState.targetFpsCap > 0) {
-            minOf(currentState.negotiatedFps, currentState.targetFpsCap)
-        } else {
-            currentState.negotiatedFps
-        }
-        val hwUpper = activeCameraFpsUpper
-        val needsSoftwarePacing = hwUpper <= 0 || effectiveFps < hwUpper
-        if (needsSoftwarePacing && effectiveFps > 0 && lastSubmittedFrameNs != 0L && frameTimestampNs >= lastSubmittedFrameNs) {
-            val minIntervalNs = (1_000_000_000L / effectiveFps) * 82 / 100
-            if (frameTimestampNs - lastSubmittedFrameNs < minIntervalNs) {
-                return
-            }
+        val effectiveFps = Camera2ConfigHelper.computeEffectiveFps(currentState.negotiatedFps, currentState.targetFpsCap)
+        if (Camera2ConfigHelper.shouldSkipFrameByTimestamp(frameTimestampNs, lastSubmittedFrameNs, effectiveFps, activeCameraFpsUpper)) {
+            return
         }
 
         // 2. Check if V4L2 ring buffer can accept a frame BEFORE doing any YUV/JPEG encoding!
@@ -1036,7 +900,6 @@ class WebcamController private constructor(private val application: Application)
         val uvRowStride = planes[1].rowStride
         val uvPixelStride = planes[1].pixelStride
 
-        val lens = currentState.availableCameras.firstOrNull { it.cameraId == currentState.selectedCameraId }
         val totalRotation = currentState.rotationDegrees
         val mirror = currentState.mirrorHorizontal
 
