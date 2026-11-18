@@ -123,6 +123,7 @@ class WebcamController private constructor(private val application: Application)
 
     private var uvcLoopJob: Job? = null
     private var saveJpegQualityJob: Job? = null
+    private var pendingStopCaptureJob: Job? = null
 
     private var cameraThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
@@ -275,6 +276,8 @@ class WebcamController private constructor(private val application: Application)
     }
 
     fun stopUvcSession() {
+        pendingStopCaptureJob?.cancel()
+        pendingStopCaptureJob = null
         stopCameraCapture()
         UvcNative.nativeClose()
         uvcLoopJob?.cancel()
@@ -304,6 +307,8 @@ class WebcamController private constructor(private val application: Application)
     override fun onStreamStateChanged(isStreaming: Boolean, isMjpeg: Boolean, width: Int, height: Int, fps: Int) {
         Timber.i("UVC stream state changed: streaming=$isStreaming isMjpeg=$isMjpeg ${width}x${height}@${fps}fps")
         if (isStreaming) {
+            pendingStopCaptureJob?.cancel()
+            pendingStopCaptureJob = null
             triggerUsbIrqBoost()
             _state.update {
                 it.copy(
@@ -328,7 +333,15 @@ class WebcamController private constructor(private val application: Application)
                 )
             }
             if (!_state.value.isPreviewEnabled || previewSurface == null) {
-                stopCameraCapture()
+                // Debounce teardown by 350ms so host STREAMOFF->STREAMON FPS/format switches stay zero-teardown
+                pendingStopCaptureJob?.cancel()
+                pendingStopCaptureJob = scope.launch {
+                    delay(350)
+                    val s = _state.value
+                    if (!s.isHostStreaming && (!s.isPreviewEnabled || previewSurface == null)) {
+                        stopCameraCapture()
+                    }
+                }
             }
         }
     }
@@ -822,9 +835,14 @@ class WebcamController private constructor(private val application: Application)
 
         val startNs = System.nanoTime()
 
-        // 1. Optional user FPS cap pacing
-        if (currentState.targetFpsCap > 0 && lastSubmittedFrameNs != 0L) {
-            val minIntervalNs = (1_000_000_000L / currentState.targetFpsCap) * 90 / 100
+        // 1. Pacing against effective FPS (host negotiated FPS capped by user FPS cap)
+        val effectiveFps = if (currentState.targetFpsCap > 0) {
+            minOf(currentState.negotiatedFps, currentState.targetFpsCap)
+        } else {
+            currentState.negotiatedFps
+        }
+        if (effectiveFps > 0 && lastSubmittedFrameNs != 0L) {
+            val minIntervalNs = (1_000_000_000L / effectiveFps) * 90 / 100
             if (startNs - lastSubmittedFrameNs < minIntervalNs) {
                 return
             }
