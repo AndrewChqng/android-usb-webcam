@@ -18,6 +18,35 @@
 
 #if defined(__aarch64__) || defined(__ARM_NEON__)
 #include <arm_neon.h>
+
+static inline void transpose8x8_u8(
+    uint8x8_t& r0, uint8x8_t& r1, uint8x8_t& r2, uint8x8_t& r3,
+    uint8x8_t& r4, uint8x8_t& r5, uint8x8_t& r6, uint8x8_t& r7
+) {
+    uint8x8x2_t t0 = vtrn_u8(r0, r1);
+    uint8x8x2_t t1 = vtrn_u8(r2, r3);
+    uint8x8x2_t t2 = vtrn_u8(r4, r5);
+    uint8x8x2_t t3 = vtrn_u8(r6, r7);
+
+    uint16x4x2_t q0 = vtrn_u16(vreinterpret_u16_u8(t0.val[0]), vreinterpret_u16_u8(t1.val[0]));
+    uint16x4x2_t q1 = vtrn_u16(vreinterpret_u16_u8(t0.val[1]), vreinterpret_u16_u8(t1.val[1]));
+    uint16x4x2_t q2 = vtrn_u16(vreinterpret_u16_u8(t2.val[0]), vreinterpret_u16_u8(t3.val[0]));
+    uint16x4x2_t q3 = vtrn_u16(vreinterpret_u16_u8(t2.val[1]), vreinterpret_u16_u8(t3.val[1]));
+
+    uint32x2x2_t d0 = vtrn_u32(vreinterpret_u32_u16(q0.val[0]), vreinterpret_u32_u16(q2.val[0]));
+    uint32x2x2_t d1 = vtrn_u32(vreinterpret_u32_u16(q1.val[0]), vreinterpret_u32_u16(q3.val[0]));
+    uint32x2x2_t d2 = vtrn_u32(vreinterpret_u32_u16(q0.val[1]), vreinterpret_u32_u16(q2.val[1]));
+    uint32x2x2_t d3 = vtrn_u32(vreinterpret_u32_u16(q1.val[1]), vreinterpret_u32_u16(q3.val[1]));
+
+    r0 = vreinterpret_u8_u32(d0.val[0]);
+    r1 = vreinterpret_u8_u32(d1.val[0]);
+    r2 = vreinterpret_u8_u32(d2.val[0]);
+    r3 = vreinterpret_u8_u32(d3.val[0]);
+    r4 = vreinterpret_u8_u32(d0.val[1]);
+    r5 = vreinterpret_u8_u32(d1.val[1]);
+    r6 = vreinterpret_u8_u32(d2.val[1]);
+    r7 = vreinterpret_u8_u32(d3.val[1]);
+}
 #endif
 
 #include <atomic>
@@ -440,7 +469,14 @@ bool startV4l2StreamingLocked(UvcContext* ctx) {
             uint8_t* p = static_cast<uint8_t*>(ctx->buffers[0].start);
             size_t frameBytes = static_cast<size_t>(ctx->active_width) * ctx->active_height * 2u;
             if (frameBytes > ctx->buffers[0].length) frameBytes = ctx->buffers[0].length;
-            for (size_t j = 0; j + 1 < frameBytes; j += 2) {
+            size_t j = 0;
+#if defined(__aarch64__) || defined(__ARM_NEON__)
+            uint8x16_t blackYuyv = vreinterpretq_u8_u16(vdupq_n_u16(0x8000));
+            for (; j + 16 <= frameBytes; j += 16) {
+                vst1q_u8(p + j, blackYuyv);
+            }
+#endif
+            for (; j + 1 < frameBytes; j += 2) {
                 p[j] = 0x00;
                 p[j + 1] = 0x80;
             }
@@ -1254,6 +1290,19 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativePushYuvToYuyvFrame(
                     yuyv.val[1] = uvVec;
                     vst2q_u8(dstRow + x * 2, yuyv);
                 }
+            } else if (uvPixelStride == 2) {
+                // Separate or non-adjacent semi-planar UV with stride 2 -> YUYV via NEON
+                for (; x + 16 <= dstW; x += 16) {
+                    uint8x16_t yVec = vld1q_u8(yRow + x);
+                    uint8x8x2_t uDeint = vld2_u8(uRow + x);
+                    uint8x8x2_t vDeint = vld2_u8(vRow + x);
+                    uint8x8x2_t uvZip = vzip_u8(uDeint.val[0], vDeint.val[0]);
+                    uint8x16_t uvVec = vcombine_u8(uvZip.val[0], uvZip.val[1]);
+                    uint8x16x2_t yuyv;
+                    yuyv.val[0] = yVec;
+                    yuyv.val[1] = uvVec;
+                    vst2q_u8(dstRow + x * 2, yuyv);
+                }
             } else if (uvPixelStride == 1) {
                 // Planar I420 / YV12 source -> YUYV via NEON
                 for (; x + 16 <= dstW; x += 16) {
@@ -1407,6 +1456,28 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeYuv420ToNv21(
                     vuDst[cx * 2 + 1] = uvSrc[cx * 2 + 0];
                 }
             }
+        } else if (uvPixelStride == 2) {
+            // Separate or non-adjacent semi-planar UV with stride 2 -> NV21 via ARM NEON
+            for (int cy = 0; cy < chromaH; ++cy) {
+                const uint8_t* __restrict uRow = uPlane + cy * uvRowStride;
+                const uint8_t* __restrict vRow = vPlane + cy * uvRowStride;
+                uint8_t* __restrict vuRow = dstVU + cy * dstW;
+                int cx = 0;
+#if defined(__aarch64__) || defined(__ARM_NEON__)
+                for (; cx + 16 <= chromaW; cx += 16) {
+                    uint8x16x2_t uDeint = vld2q_u8(uRow + cx * 2);
+                    uint8x16x2_t vDeint = vld2q_u8(vRow + cx * 2);
+                    uint8x16x2_t vu;
+                    vu.val[0] = vDeint.val[0];
+                    vu.val[1] = uDeint.val[0];
+                    vst2q_u8(vuRow + cx * 2, vu);
+                }
+#endif
+                for (; cx < chromaW; ++cx) {
+                    vuRow[cx * 2 + 0] = vRow[cx * 2];
+                    vuRow[cx * 2 + 1] = uRow[cx * 2];
+                }
+            }
         } else if (uvPixelStride == 1) {
             // Planar I420 -> NV21 via ARM NEON
             for (int cy = 0; cy < chromaH; ++cy) {
@@ -1469,16 +1540,87 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeYuv420ToNv21(
                 }
             }
         } else {
+            bool lumaHandledByNeon = false;
+#if defined(__aarch64__) || defined(__ARM_NEON__)
+            if (!mirror && zoom <= 1.001f && srcW == dstH && srcH == dstW && (rotation == 90 || rotation == 270)) {
+                lumaHandledByNeon = true;
+                const int alignedW = dstW & ~7;
+                const int alignedH = dstH & ~7;
+
+                for (int y = 0; y < alignedH; y += 8) {
+                    const int sxBase = (rotation == 270) ? (srcW - 8 - y) : y;
+                    for (int x = 0; x < alignedW; x += 8) {
+                        const int syBase = (rotation == 90) ? (srcH - 8 - x) : x;
+                        uint8x8_t r0 = vld1_u8(yPlane + (syBase + 0) * yRowStride + sxBase);
+                        uint8x8_t r1 = vld1_u8(yPlane + (syBase + 1) * yRowStride + sxBase);
+                        uint8x8_t r2 = vld1_u8(yPlane + (syBase + 2) * yRowStride + sxBase);
+                        uint8x8_t r3 = vld1_u8(yPlane + (syBase + 3) * yRowStride + sxBase);
+                        uint8x8_t r4 = vld1_u8(yPlane + (syBase + 4) * yRowStride + sxBase);
+                        uint8x8_t r5 = vld1_u8(yPlane + (syBase + 5) * yRowStride + sxBase);
+                        uint8x8_t r6 = vld1_u8(yPlane + (syBase + 6) * yRowStride + sxBase);
+                        uint8x8_t r7 = vld1_u8(yPlane + (syBase + 7) * yRowStride + sxBase);
+
+                        transpose8x8_u8(r0, r1, r2, r3, r4, r5, r6, r7);
+
+                        if (rotation == 90) {
+                            vst1_u8(dstY + (y + 0) * dstW + x, vrev64_u8(r0));
+                            vst1_u8(dstY + (y + 1) * dstW + x, vrev64_u8(r1));
+                            vst1_u8(dstY + (y + 2) * dstW + x, vrev64_u8(r2));
+                            vst1_u8(dstY + (y + 3) * dstW + x, vrev64_u8(r3));
+                            vst1_u8(dstY + (y + 4) * dstW + x, vrev64_u8(r4));
+                            vst1_u8(dstY + (y + 5) * dstW + x, vrev64_u8(r5));
+                            vst1_u8(dstY + (y + 6) * dstW + x, vrev64_u8(r6));
+                            vst1_u8(dstY + (y + 7) * dstW + x, vrev64_u8(r7));
+                        } else {
+                            vst1_u8(dstY + (y + 0) * dstW + x, r7);
+                            vst1_u8(dstY + (y + 1) * dstW + x, r6);
+                            vst1_u8(dstY + (y + 2) * dstW + x, r5);
+                            vst1_u8(dstY + (y + 3) * dstW + x, r4);
+                            vst1_u8(dstY + (y + 4) * dstW + x, r3);
+                            vst1_u8(dstY + (y + 5) * dstW + x, r2);
+                            vst1_u8(dstY + (y + 6) * dstW + x, r1);
+                            vst1_u8(dstY + (y + 7) * dstW + x, r0);
+                        }
+                    }
+                    // Remaining x columns if dstW not multiple of 8
+                    for (int row = 0; row < 8; ++row) {
+                        const int dy = y + row;
+                        const int sx = lutY[dy];
+                        uint8_t* __restrict yOutRow = dstY + dy * dstW;
+                        for (int x = alignedW; x < dstW; ++x) {
+                            yOutRow[x] = yPlane[lutX[x] * yRowStride + sx];
+                        }
+                    }
+                }
+                // Remaining y rows if dstH not multiple of 8
+                for (int y = alignedH; y < dstH; ++y) {
+                    const int sx = lutY[y];
+                    uint8_t* __restrict yOutRow = dstY + y * dstW;
+                    for (int x = 0; x < dstW; ++x) {
+                        yOutRow[x] = yPlane[lutX[x] * yRowStride + sx];
+                    }
+                }
+            }
+#endif
             for (int y = 0; y < dstH; ++y) {
                 const int sx = lutY[y];
                 const int uvColOffset = (sx >> 1) * uvPixelStride;
                 uint8_t* __restrict yOutRow = dstY + y * dstW;
                 uint8_t* __restrict vuOutRow = ((y & 1) == 0) ? (dstVU + (y >> 1) * dstW) : nullptr;
 
-                for (int x = 0; x < dstW; ++x) {
-                    const int sy = lutX[x];
-                    yOutRow[x] = yPlane[sy * yRowStride + sx];
-                    if (vuOutRow != nullptr && (x & 1) == 0) {
+                if (!lumaHandledByNeon) {
+                    for (int x = 0; x < dstW; ++x) {
+                        const int sy = lutX[x];
+                        yOutRow[x] = yPlane[sy * yRowStride + sx];
+                        if (vuOutRow != nullptr && (x & 1) == 0) {
+                            const int uvIdx = (sy >> 1) * uvRowStride + uvColOffset;
+                            vuOutRow[x + 0] = vPlane[uvIdx];
+                            vuOutRow[x + 1] = uPlane[uvIdx];
+                        }
+                    }
+                } else if (vuOutRow != nullptr) {
+                    for (int x = 0; x < dstW; x += 2) {
+                        const int sy = lutX[x];
                         const int uvIdx = (sy >> 1) * uvRowStride + uvColOffset;
                         vuOutRow[x + 0] = vPlane[uvIdx];
                         vuOutRow[x + 1] = uPlane[uvIdx];
