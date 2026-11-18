@@ -43,6 +43,7 @@ data class ResolutionItem(
             width == 640 && height == 360 -> "360p nHD"
             width == 352 && height == 288 -> "288p CIF"
             width == 320 && height == 240 -> "240p QVGA"
+            width == 256 && height == 144 -> "144p (16:9)"
             width == 176 && height == 144 -> "144p QCIF"
             width == 2160 && height == 3840 -> "4K Portrait"
             width == 1440 && height == 2560 -> "2K Portrait"
@@ -91,6 +92,7 @@ data class ResolutionItem(
             ResolutionItem(640, 360),
             ResolutionItem(352, 288),
             ResolutionItem(320, 240),
+            ResolutionItem(256, 144),
             ResolutionItem(176, 144),
             // Standard vertical companion resolutions (for mobile/OBS streaming)
             ResolutionItem(1080, 1920),
@@ -130,7 +132,7 @@ data class ResolutionItem(
         }
 
         private val COMMON_TIERS: List<Pair<String, ResolutionItem>> = listOf(
-            "max_144p" to ResolutionItem(176, 144),
+            "max_144p" to ResolutionItem(256, 144),
             "max_240p" to ResolutionItem(320, 240),
             "max_360p" to ResolutionItem(640, 360),
             "max_480p" to ResolutionItem(640, 480),

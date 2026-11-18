@@ -550,11 +550,13 @@ class WebcamController private constructor(private val application: Application)
             val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             val sizes = map?.getOutputSizes(ImageFormat.YUV_420_888) ?: return Size(targetW, targetH)
 
-            val reqW = maxOf(targetW, targetH)
-            val reqH = minOf(targetW, targetH)
+            // Enforce a minimum sensor capture floor (640x360) so Camera2 never uses sub-VGA HAL ISP
+            // streams (e.g. 176x144 QCIF) that exhibit chroma/stride artifacts; C++ LUT scales down cleanly.
+            val reqW = maxOf(maxOf(targetW, targetH), 640)
+            val reqH = maxOf(minOf(targetW, targetH), 360)
 
             // Direct match first (either direct orientation or rotated)
-            sizes.firstOrNull { (it.width == targetW && it.height == targetH) || (it.width == reqW && it.height == reqH) }?.let { return it }
+            sizes.firstOrNull { it.width == reqW && it.height == reqH }?.let { return it }
 
             // Match 4K UHD or 1440p QHD if requested
             if (reqW >= 3840 && reqH >= 2160) {
