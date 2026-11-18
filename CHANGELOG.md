@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v3.2.2] - 2026-11-18
+
+### Added
+- **Discrete Max Resolution Slider**: Replaced preset resolution chips with a discrete 7-step **Max Resolution** slider (`240p` · `360p` · `480p` · `720p` · `1080p` · `1440p` · `2160p/4K`) across `MainScreen`, `ResolutionManagerDialog`, and the Web Remote dashboard.
+- **Batch Custom Resolution Controls**: Added **Select All** and **Deselect All** buttons (respecting the 16-frame Linux UVC cap and preserving at least 1 valid frame) in both `ResolutionManagerDialog` and the Web Remote.
+
+### Improved
+- **Zero-Teardown `STREAMOFF` Debounce**: Added a 350ms grace window on `UVC_EVENT_STREAMOFF` in `WebcamController` so rapid host `STREAMOFF -> STREAMON` transitions (FPS/format switches) keep Camera2 alive for 0ms on-the-fly updates.
+- **Effective FPS Software Pacing**: `processCameraFrame` paces against `effectiveFps` (`negotiatedFps` capped by `targetFpsCap`) so lower host-negotiated framerates take effect smoothly even on fixed-FPS sensors.
+- **Direct 1:1 Sensor Capture & Sub-240p Removal**: Enforced `minOf(w, h) >= 240` across sensor discovery, baselines, presets, and custom validation (disallowing sub-240p QCIF streams that exhibit HAL/stride artifacts without relying on scaler downscaling workarounds).
+
+---
+
 ## [v3.2.1] - 2026-11-18
 
 ### Performance & Latency Tuning
