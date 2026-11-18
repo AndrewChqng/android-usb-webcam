@@ -142,6 +142,7 @@ sealed class AppPreference(val preference: PreferenceKey<*>) {
     )
     data object TargetFpsCapPref : IntPreferenceKey("target_fps_cap_v1", 0)
     data object LockConstantFpsPref : BooleanPreferenceKey("lock_constant_fps_v1", true)
+    data object UseNativeCamera2PtzPref : BooleanPreferenceKey("use_native_camera2_ptz_v1", false)
     data object WebServerEnabledPref : BooleanPreferenceKey("web_server_enabled", true)
     data object WebServerPortPref : IntPreferenceKey("web_server_port", 8080)
 }
@@ -274,6 +275,7 @@ data class UserPreferences(
     val maxInFlightBuffers: Int = 2,
     val targetFpsCap: Int = 0,
     val lockConstantFps: Boolean = true,
+    val useNativeCamera2Ptz: Boolean = false,
     val webServerEnabled: Boolean = true,
     val webServerPort: Int = 8080,
 )
@@ -438,6 +440,7 @@ class UserPreferencesRepository private constructor(application: Application) {
                 maxInFlightBuffers = AppPreference.MaxInFlightBuffersPref.getValue(),
                 targetFpsCap = AppPreference.TargetFpsCapPref.getValue(),
                 lockConstantFps = AppPreference.LockConstantFpsPref.getValue(),
+                useNativeCamera2Ptz = AppPreference.UseNativeCamera2PtzPref.getValue(),
                 webServerEnabled = AppPreference.WebServerEnabledPref.getValue(),
                 webServerPort = AppPreference.WebServerPortPref.getValue(),
             )

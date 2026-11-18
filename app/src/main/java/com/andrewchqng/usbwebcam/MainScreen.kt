@@ -563,6 +563,28 @@ fun MainPage(
                     )
                 }
 
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Native Camera2 API PTZ", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            text = if (webcamState.useNativeCamera2Ptz) {
+                                "Uses Camera2 SCALER_CROP_REGION (hardware ISP crop; stays on NEON 1:1 path)."
+                            } else {
+                                "Uses software ROI crop in native C++ (works on CENTER_ONLY sensors)."
+                            },
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Switch(
+                        checked = webcamState.useNativeCamera2Ptz,
+                        onCheckedChange = { mainViewModel.setUseNativeCamera2Ptz(it) }
+                    )
+                }
+
                 Text(
                     text = String.format(Locale.US, "Digital Zoom: %.1fx", webcamState.zoomRatio),
                     style = MaterialTheme.typography.bodyMedium
@@ -573,7 +595,7 @@ fun MainPage(
                     valueRange = 1.0f..webcamState.maxZoom.coerceAtLeast(4.0f)
                 )
 
-                if (webcamState.zoomRatio > 1.05f) {
+                if (webcamState.useNativeCamera2Ptz || webcamState.zoomRatio > 1.05f) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -597,6 +619,23 @@ fun MainPage(
                                 ) {
                                     Text("Recenter", style = MaterialTheme.typography.labelMedium)
                                 }
+                            }
+                        }
+
+                        if (webcamState.useNativeCamera2Ptz) {
+                            if (!webcamState.activeCameraSupportsFreeformCrop) {
+                                Text(
+                                    "Sensor reports CENTER_ONLY cropping (HAL may ignore off-center pan/tilt).",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (webcamState.appliedCropRegionDesc.isNotEmpty()) {
+                                Text(
+                                    "HAL Crop: ${webcamState.appliedCropRegionDesc}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
 
@@ -642,7 +681,7 @@ fun MainPage(
                     }
                 } else {
                     Text(
-                        "Camera2 X/Y pan & tilt controls activate when zoomed in (> 1.0x).",
+                        "Software X/Y pan & tilt controls activate when zoomed in (> 1.0x).",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

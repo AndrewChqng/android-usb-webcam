@@ -298,6 +298,7 @@ class WebcamWebServer private constructor(private val application: Application) 
         json.put("panX", s.panX.toDouble())
         json.put("panY", s.panY.toDouble())
         json.put("maxZoom", s.maxZoom.toDouble())
+        json.put("useNativeCamera2Ptz", s.useNativeCamera2Ptz)
 
         json.put("autoFocus", s.autoFocusEnabled)
         json.put("lockConstantFps", s.lockConstantFps)
@@ -464,6 +465,9 @@ class WebcamWebServer private constructor(private val application: Application) 
         }
         if (json.has("lockConstantFps")) {
             webcamController.setLockConstantFps(json.optBoolean("lockConstantFps"))
+        }
+        if (json.has("useNativeCamera2Ptz")) {
+            webcamController.setUseNativeCamera2Ptz(json.optBoolean("useNativeCamera2Ptz"))
         }
         if (json.has("videoStabilization")) {
             webcamController.setVideoStabilization(json.optBoolean("videoStabilization"))
@@ -691,6 +695,14 @@ class WebcamWebServer private constructor(private val application: Application) 
         <div class="card-title">
           <span>🔍 Pan, Tilt & Zoom (PTZ)</span>
           <button class="btn-outline" style="padding: 2px 8px;" onclick="recenterPan()">Recenter</button>
+        </div>
+
+        <div class="toggle-row">
+          <span>Native Camera2 API PTZ</span>
+          <label class="switch">
+            <input type="checkbox" id="chk-native-ptz" onchange="postSettings({useNativeCamera2Ptz: this.checked})">
+            <span class="slider"></span>
+          </label>
         </div>
 
         <div class="control-group">
@@ -1307,6 +1319,8 @@ class WebcamWebServer private constructor(private val application: Application) 
       document.getElementById('chk-aelock').checked = !!data.aeLock;
       document.getElementById('chk-studio').checked = !!data.studioQuality;
       document.getElementById('chk-awblock').checked = !!data.awbLock;
+      const chkPtz = document.getElementById('chk-native-ptz');
+      if (chkPtz) chkPtz.checked = !!data.useNativeCamera2Ptz;
 
       document.getElementById('rng-ev').value = data.exposureEv;
       const evVal = data.exposureEv;

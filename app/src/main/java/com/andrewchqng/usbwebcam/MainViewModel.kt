@@ -201,6 +201,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setAutoFocusEnabled(enabled: Boolean) = webcamController.setAutoFocusEnabled(enabled)
     fun setLockConstantFps(locked: Boolean) = webcamController.setLockConstantFps(locked)
     fun setVideoStabilization(enabled: Boolean) = webcamController.setVideoStabilization(enabled)
+    fun setUseNativeCamera2Ptz(enabled: Boolean) = webcamController.setUseNativeCamera2Ptz(enabled)
     fun setZoomRatio(zoom: Float) = webcamController.setZoomRatio(zoom)
     fun setPanX(x: Float) = webcamController.setPanX(x)
     fun setPanY(y: Float) = webcamController.setPanY(y)

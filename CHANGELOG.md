@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v3.2.4] - 2026-11-18
+
+> **AI Attribution & Disclaimer**: Implemented with assistance from **Antigravity (Google DeepMind)**. Code is experimental; hardware interaction with Linux USB ConfigFS, DWC3 drivers, Camera2 HAL, and V4L2 requires root (`su`) and direct kernel ioctls.
+
+### Added
+- **Native Camera2 API PTZ Mode (`SCALER_CROP_REGION`)**: Added hardware ISP-level pan/tilt/zoom via `CaptureRequest.SCALER_CROP_REGION` (`computeCamera2CropRegion`) with `CONTROL_ZOOM_RATIO` held at `1.0f` on API 30+, keeping native C++ conversion on the 1:1 ARM64 NEON fast path while active.
+- **PTZ Mode Toggle (App UI & Web Remote)**: Added a persisted **Native Camera2 API PTZ** toggle (`use_native_camera2_ptz_v1`, default `false`) across `MainScreen` and the embedded Web Remote (`/api/settings`), letting users switch seamlessly between Camera2 hardware cropping and the zero-IPC native C++ software ROI crop.
+- **HAL Crop Diagnostics**: Queries `SCALER_CROPPING_TYPE` to warn on `CENTER_ONLY` sensors and surfaces live `TotalCaptureResult.SCALER_CROP_REGION` (`HAL Crop: [left,top WxH]`) telemetry in `MainScreen` while in Camera2 PTZ mode.
+
+---
+
 ## [v3.2.3] - 2026-11-18
 
 > **AI Attribution & Disclaimer**: Implemented with assistance from **Antigravity (Google DeepMind)**. Code is experimental; hardware interaction with Linux USB ConfigFS, DWC3 drivers, Camera2 HAL, and V4L2 requires root (`su`) and direct kernel ioctls.

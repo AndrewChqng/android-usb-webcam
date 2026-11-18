@@ -11,6 +11,8 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.TotalCaptureResult
 import android.media.ImageReader
 import android.os.Build
 import android.os.Handler
@@ -46,7 +48,8 @@ data class CameraLensInfo(
     val sensorOrientation: Int,
     val focalLengthMm: Float,
     val maxZoom: Float = 4.0f,
-    val hasFlash: Boolean = false
+    val hasFlash: Boolean = false,
+    val supportsFreeformCrop: Boolean = false
 )
 
 data class WebcamStreamState(
@@ -77,6 +80,9 @@ data class WebcamStreamState(
     val panX: Float = 0.0f, // -1.0f (left) to 1.0f (right), 0.0f = centered
     val panY: Float = 0.0f, // -1.0f (top) to 1.0f (bottom), 0.0f = centered
     val maxZoom: Float = 4.0f,
+    val activeCameraSupportsFreeformCrop: Boolean = false,
+    val appliedCropRegionDesc: String = "",
+    val useNativeCamera2Ptz: Boolean = false,
     val exposureEv: Float = 0.0f,
     val awbMode: Int = 1, // CaptureRequest.CONTROL_AWB_MODE_AUTO
     val awbLock: Boolean = false,
@@ -135,6 +141,26 @@ class WebcamController private constructor(private val application: Application)
     private var activeCaptureSize: Size? = null
     @Volatile
     private var activeCameraFpsUpper: Int = 0
+    @Volatile
+    private var lastRequestedCropRect: Rect? = null
+    @Volatile
+    private var lastLoggedAppliedCropRect: Rect? = null
+
+    private val captureCallback = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            result: TotalCaptureResult
+        ) {
+            val applied = result.get(CaptureResult.SCALER_CROP_REGION) ?: return
+            if (applied != lastLoggedAppliedCropRect) {
+                lastLoggedAppliedCropRect = Rect(applied)
+                val desc = "[${applied.left},${applied.top} ${applied.width()}x${applied.height()}]"
+                Timber.i("Camera2 SCALER_CROP_REGION requested=$lastRequestedCropRect applied=$applied")
+                _state.update { it.copy(appliedCropRegionDesc = desc) }
+            }
+        }
+    }
 
     // Reusable pre-allocated buffers for zero-GC frame encoding (sized up to 4K UHD 3840x2160)
     private var nv21Buffer: ByteArray = ByteArray(0)
@@ -156,7 +182,8 @@ class WebcamController private constructor(private val application: Application)
                 jpegQuality = prefs.jpegQuality.coerceIn(1, 100),
                 maxInFlightBuffers = prefs.maxInFlightBuffers.coerceIn(1, 4),
                 targetFpsCap = prefs.targetFpsCap.coerceAtLeast(0),
-                lockConstantFps = prefs.lockConstantFps
+                lockConstantFps = prefs.lockConstantFps,
+                useNativeCamera2Ptz = prefs.useNativeCamera2Ptz
             )
         }
     }
@@ -186,6 +213,9 @@ class WebcamController private constructor(private val application: Application)
                 }
                 val focalStr = if (focal > 0f) " (${String.format("%.1f", focal)}mm)" else ""
                 val hasFlash = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
+                val croppingType = chars.get(CameraCharacteristics.SCALER_CROPPING_TYPE)
+                    ?: CameraCharacteristics.SCALER_CROPPING_TYPE_CENTER_ONLY
+                val freeformCrop = croppingType == CameraCharacteristics.SCALER_CROPPING_TYPE_FREEFORM
                 lenses.add(
                     CameraLensInfo(
                         cameraId = id,
@@ -194,7 +224,8 @@ class WebcamController private constructor(private val application: Application)
                         sensorOrientation = orientation,
                         focalLengthMm = focal,
                         maxZoom = maxDigitalZoom,
-                        hasFlash = hasFlash
+                        hasFlash = hasFlash,
+                        supportsFreeformCrop = freeformCrop
                     )
                 )
             }
@@ -208,8 +239,14 @@ class WebcamController private constructor(private val application: Application)
             } else {
                 lenses.firstOrNull()?.cameraId ?: "0"
             }
-            val maxZ = lenses.firstOrNull { it.cameraId == selected }?.maxZoom ?: 4.0f
-            current.copy(availableCameras = lenses, selectedCameraId = selected, maxZoom = maxZ)
+            val activeLens = lenses.firstOrNull { it.cameraId == selected }
+            val maxZ = activeLens?.maxZoom ?: 4.0f
+            current.copy(
+                availableCameras = lenses,
+                selectedCameraId = selected,
+                maxZoom = maxZ,
+                activeCameraSupportsFreeformCrop = activeLens?.supportsFreeformCrop ?: false
+            )
         }
     }
 
@@ -366,11 +403,14 @@ class WebcamController private constructor(private val application: Application)
 
     fun selectCamera(cameraId: String) {
         if (_state.value.selectedCameraId == cameraId) return
-        val maxZ = _state.value.availableCameras.firstOrNull { it.cameraId == cameraId }?.maxZoom ?: 4.0f
+        val lens = _state.value.availableCameras.firstOrNull { it.cameraId == cameraId }
+        val maxZ = lens?.maxZoom ?: 4.0f
         _state.update {
             it.copy(
                 selectedCameraId = cameraId,
                 maxZoom = maxZ,
+                activeCameraSupportsFreeformCrop = lens?.supportsFreeformCrop ?: false,
+                appliedCropRegionDesc = "",
                 zoomRatio = 1.0f,
                 panX = 0.0f,
                 panY = 0.0f
@@ -383,11 +423,17 @@ class WebcamController private constructor(private val application: Application)
         val norm = ((degrees % 360) + 360) % 360
         if (_state.value.rotationDegrees == norm) return
         _state.update { it.copy(rotationDegrees = norm) }
+        if (_state.value.useNativeCamera2Ptz && (_state.value.panX != 0f || _state.value.panY != 0f)) {
+            updateRepeatingRequestOnFly()
+        }
     }
 
     fun setMirrorHorizontal(mirror: Boolean) {
         if (_state.value.mirrorHorizontal == mirror) return
         _state.update { it.copy(mirrorHorizontal = mirror) }
+        if (_state.value.useNativeCamera2Ptz && (_state.value.panX != 0f || _state.value.panY != 0f)) {
+            updateRepeatingRequestOnFly()
+        }
     }
 
     fun setJpegQuality(quality: Int) {
@@ -452,27 +498,52 @@ class WebcamController private constructor(private val application: Application)
         updateRepeatingRequestOnFly()
     }
 
+    fun setUseNativeCamera2Ptz(enabled: Boolean) {
+        if (_state.value.useNativeCamera2Ptz == enabled) return
+        _state.update { it.copy(useNativeCamera2Ptz = enabled) }
+        runCatching {
+            UserPreferencesRepository.getInstance(application).setPreference(
+                com.andrewchqng.usbwebcam.settings.AppPreference.UseNativeCamera2PtzPref,
+                enabled
+            )
+        }
+        updateRepeatingRequestOnFly()
+    }
+
     fun setZoomRatio(zoom: Float) {
         val maxZ = _state.value.maxZoom.coerceAtLeast(1.0f)
         val clamped = zoom.coerceIn(1.0f, maxZ)
+        if (abs(_state.value.zoomRatio - clamped) < 0.01f) return
         _state.update { it.copy(zoomRatio = clamped) }
+        if (_state.value.useNativeCamera2Ptz) {
+            updateRepeatingRequestOnFly()
+        }
     }
 
     fun setPanX(x: Float) {
         val clamped = x.coerceIn(-1.0f, 1.0f)
         if (abs(_state.value.panX - clamped) < 0.005f) return
         _state.update { it.copy(panX = clamped) }
+        if (_state.value.useNativeCamera2Ptz) {
+            updateRepeatingRequestOnFly()
+        }
     }
 
     fun setPanY(y: Float) {
         val clamped = y.coerceIn(-1.0f, 1.0f)
         if (abs(_state.value.panY - clamped) < 0.005f) return
         _state.update { it.copy(panY = clamped) }
+        if (_state.value.useNativeCamera2Ptz) {
+            updateRepeatingRequestOnFly()
+        }
     }
 
     fun resetPan() {
         if (_state.value.panX == 0f && _state.value.panY == 0f) return
         _state.update { it.copy(panX = 0f, panY = 0f) }
+        if (_state.value.useNativeCamera2Ptz) {
+            updateRepeatingRequestOnFly()
+        }
     }
 
     fun setExposureEv(ev: Float) {
@@ -775,15 +846,80 @@ class WebcamController private constructor(private val application: Application)
                 builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, index)
             }
 
-            // Keep hardware Camera2 capture unzoomed & full-FOV so the entire scene is available for PTZ pan/tilt
+            // PTZ crop region: hardware Camera2 SCALER_CROP_REGION vs full-FOV for software ROI crop
             val activeRect = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
-            if (activeRect != null) {
-                builder.set(CaptureRequest.SCALER_CROP_REGION, activeRect)
+            val cropRegion = if (s.useNativeCamera2Ptz) {
+                computeCamera2CropRegion(chars, s) ?: activeRect
+            } else {
+                activeRect
+            }
+            if (cropRegion != null) {
+                lastRequestedCropRect = Rect(cropRegion)
+                builder.set(CaptureRequest.SCALER_CROP_REGION, cropRegion)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                // Keep CONTROL_ZOOM_RATIO at 1.0f so Camera2 honors SCALER_CROP_REGION pan/tilt/zoom directly
                 builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, 1.0f)
             }
         }
+    }
+
+    private fun computeCamera2CropRegion(chars: CameraCharacteristics, s: WebcamStreamState): Rect? {
+        val activeRect = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return null
+        val activeW = activeRect.width()
+        val activeH = activeRect.height()
+        if (activeW <= 0 || activeH <= 0) return null
+
+        val capSize = activeCaptureSize ?: Size(s.negotiatedWidth.coerceAtLeast(1), s.negotiatedHeight.coerceAtLeast(1))
+        val capW = maxOf(capSize.width, capSize.height)
+        val capH = minOf(capSize.width, capSize.height)
+        val reqAspectW = if (activeW >= activeH) capW else capH
+        val reqAspectH = if (activeW >= activeH) capH else capW
+
+        var baseW = activeW
+        var baseH = activeH
+        if (activeW.toLong() * reqAspectH > activeH.toLong() * reqAspectW) {
+            baseW = ((activeH.toLong() * reqAspectW) / reqAspectH).toInt()
+        } else if (activeW.toLong() * reqAspectH < activeH.toLong() * reqAspectW) {
+            baseH = ((activeW.toLong() * reqAspectH) / reqAspectW).toInt()
+        }
+
+        val maxDigitalZoom = (chars.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: s.maxZoom).coerceAtLeast(1.0f)
+        val zoom = s.zoomRatio.coerceIn(1.0f, maxDigitalZoom)
+        val cropW = ((baseW / zoom).roundToInt().coerceIn(64, activeW)) and 1.inv()
+        val cropH = ((baseH / zoom).roundToInt().coerceIn(64, activeH)) and 1.inv()
+
+        val userX = if (s.mirrorHorizontal) -s.panX else s.panX
+        val userY = s.panY
+        var sensorPanX = userX
+        var sensorPanY = userY
+        when (s.rotationDegrees) {
+            90 -> {
+                sensorPanX = userY
+                sensorPanY = -userX
+            }
+            180 -> {
+                sensorPanX = -userX
+                sensorPanY = -userY
+            }
+            270 -> {
+                sensorPanX = -userY
+                sensorPanY = userX
+            }
+        }
+
+        val maxPanX = (activeW - cropW).coerceAtLeast(0)
+        val maxPanY = (activeH - cropH).coerceAtLeast(0)
+        val normX = (sensorPanX.coerceIn(-1f, 1f) + 1f) * 0.5f
+        val normY = (sensorPanY.coerceIn(-1f, 1f) + 1f) * 0.5f
+
+        val rawLeft = activeRect.left + (normX * maxPanX).roundToInt()
+        val rawTop = activeRect.top + (normY * maxPanY).roundToInt()
+        val clampedLeft = rawLeft.coerceIn(activeRect.left, activeRect.right - cropW)
+        val clampedTop = rawTop.coerceIn(activeRect.top, activeRect.bottom - cropH)
+        val left = clampedLeft - ((clampedLeft - activeRect.left) and 1)
+        val top = clampedTop - ((clampedTop - activeRect.top) and 1)
+        return Rect(left, top, left + cropW, top + cropH)
     }
 
     @Synchronized
@@ -803,7 +939,7 @@ class WebcamController private constructor(private val application: Application)
                 }
                 applyCameraParameters(this, s.selectedCameraId, s)
             }
-            session.setRepeatingRequest(requestBuilder.build(), null, handler)
+            session.setRepeatingRequest(requestBuilder.build(), captureCallback, handler)
         } catch (e: Exception) {
             Timber.w(e, "Failed to update Camera2 repeating request on the fly")
         }
@@ -837,7 +973,7 @@ class WebcamController private constructor(private val application: Application)
                 override fun onConfigured(session: CameraCaptureSession) {
                     captureSession = session
                     try {
-                        session.setRepeatingRequest(requestBuilder.build(), null, handler)
+                        session.setRepeatingRequest(requestBuilder.build(), captureCallback, handler)
                     } catch (e: Exception) {
                         Timber.e(e, "Failed to start repeating Camera2 request")
                     }
@@ -904,6 +1040,10 @@ class WebcamController private constructor(private val application: Application)
         val totalRotation = currentState.rotationDegrees
         val mirror = currentState.mirrorHorizontal
 
+        val swZoom = if (currentState.useNativeCamera2Ptz) 1.0f else currentState.zoomRatio
+        val swPanX = if (currentState.useNativeCamera2Ptz) 0.0f else currentState.panX
+        val swPanY = if (currentState.useNativeCamera2Ptz) 0.0f else currentState.panY
+
         val pushed: Boolean
         val payloadBytes: Int
         if (currentState.negotiatedFormat == "MJPEG") {
@@ -925,9 +1065,9 @@ class WebcamController private constructor(private val application: Application)
                 dstH,
                 totalRotation,
                 mirror,
-                currentState.zoomRatio,
-                currentState.panX,
-                currentState.panY,
+                swZoom,
+                swPanX,
+                swPanY,
                 nv21Buffer
             )
 
@@ -950,9 +1090,9 @@ class WebcamController private constructor(private val application: Application)
                 uvPixelStride,
                 totalRotation,
                 mirror,
-                currentState.zoomRatio,
-                currentState.panX,
-                currentState.panY,
+                swZoom,
+                swPanX,
+                swPanY,
                 maxInFlight
             )
         }
@@ -1016,6 +1156,9 @@ class WebcamController private constructor(private val application: Application)
         lastFpsTimestampNs = 0L
         lastSubmittedFrameNs = 0L
         activeCameraFpsUpper = 0
+        lastRequestedCropRect = null
+        lastLoggedAppliedCropRect = null
+        _state.update { it.copy(appliedCropRegionDesc = "") }
     }
 
     companion object {
