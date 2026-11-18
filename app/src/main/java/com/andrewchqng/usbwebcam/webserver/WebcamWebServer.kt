@@ -824,6 +824,7 @@ class WebcamWebServer private constructor(private val application: Application) 
             <button class="pill-btn" id="fpscap-0" onclick="setFpsCap(0)">Auto</button>
             <button class="pill-btn" id="fpscap-60" onclick="setFpsCap(60)">60</button>
             <button class="pill-btn" id="fpscap-30" onclick="setFpsCap(30)">30</button>
+            <button class="pill-btn" id="fpscap-24" onclick="setFpsCap(24)">24</button>
             <button class="pill-btn" id="fpscap-15" onclick="setFpsCap(15)">15</button>
             <button class="pill-btn" id="fpscap-10" onclick="setFpsCap(10)">10</button>
             <button class="pill-btn" id="fpscap-5" onclick="setFpsCap(5)">5</button>
@@ -1288,7 +1289,7 @@ class WebcamWebServer private constructor(private val application: Application) 
       document.getElementById('lbl-quality').innerText = data.jpegQuality + '%';
 
       // FPS cap pills
-      [0, 60, 30, 15, 10, 5].forEach(cap => {
+      [0, 60, 30, 24, 15, 10, 5].forEach(cap => {
         const btn = document.getElementById('fpscap-' + cap);
         if (btn) btn.className = 'pill-btn' + (data.targetFpsCap === cap ? ' active' : '');
       });

@@ -128,6 +128,15 @@ class CharacterDeviceManager private constructor(private val application: Applic
 
         val mjpegFrames = mutableListOf<UvcFrameConfig>()
         val yuyvFrames = mutableListOf<UvcFrameConfig>()
+        val allFpsTiers = listOf(
+            60 to 166666L,
+            30 to 333333L,
+            24 to 416666L,
+            15 to 666666L,
+            10 to 1000000L,
+            5 to 2000000L
+        )
+        val configuredMaxFps = prefs.uvcDefaultFps.coerceIn(5, 60)
 
         for (i in resolvedWidths.indices) {
             val w = resolvedWidths[i]
@@ -136,14 +145,11 @@ class CharacterDeviceManager private constructor(private val application: Applic
             val pixels = w.toLong() * h
             val maxBufSize = pixels * 2
 
-            val mjpegIntervals = if (pixels <= 1920L * 1080L) {
-                listOf(166666L, 333333L, 666666L)
-            } else {
-                listOf(333333L, 666666L)
-            }
-            val mjpegDefInterval = 333333L
-            val mjpegMinBitRate = (pixels * 16 * 15) / 8
-            val mjpegMaxBitRate = pixels * 16 * 30
+            val mjpegCapFps = minOf(configuredMaxFps, if (pixels <= 1920L * 1080L) 60 else 30)
+            val mjpegIntervals = allFpsTiers.filter { it.first <= mjpegCapFps }.map { it.second }.ifEmpty { listOf(333333L) }
+            val mjpegDefInterval = mjpegIntervals.first()
+            val mjpegMinBitRate = (pixels * 16 * 5) / 8
+            val mjpegMaxBitRate = pixels * 16 * mjpegCapFps
             mjpegFrames.add(
                 UvcFrameConfig(
                     dirName = dirName,
@@ -157,20 +163,12 @@ class CharacterDeviceManager private constructor(private val application: Applic
                 )
             )
 
-            val yuyvIntervals: List<Long>
-            val yuyvDefInterval: Long
-            if (pixels <= 640L * 480L) {
-                yuyvIntervals = listOf(333333L, 666666L, 1000000L)
-                yuyvDefInterval = 333333L
-            } else if (pixels <= 1280L * 720L) {
-                yuyvIntervals = listOf(666666L, 1000000L, 2000000L)
-                yuyvDefInterval = 666666L
-            } else {
-                yuyvIntervals = listOf(2000000L)
-                yuyvDefInterval = 2000000L
-            }
+            val yuyvHwMaxFps = if (pixels <= 640L * 480L) 30 else if (pixels <= 1280L * 720L) 15 else 5
+            val yuyvCapFps = minOf(configuredMaxFps, yuyvHwMaxFps)
+            val yuyvIntervals = allFpsTiers.filter { it.first <= yuyvCapFps }.map { it.second }.ifEmpty { listOf(2000000L) }
+            val yuyvDefInterval = yuyvIntervals.first()
             val yuyvMinBitRate = pixels * 16 * 5
-            val yuyvMaxBitRate = pixels * 16 * 30
+            val yuyvMaxBitRate = pixels * 16 * yuyvCapFps
             yuyvFrames.add(
                 UvcFrameConfig(
                     dirName = dirName,

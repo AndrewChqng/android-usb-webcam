@@ -112,4 +112,13 @@
     <string name="uvc_res_max_1440p">Max 1440p 2K (up to 2560x1440)</string>
     <string name="uvc_res_max_4k">Max 2160p 4K UHD (up to 3840x2160)</string>
     <string name="uvc_res_custom">Custom Resolution Set</string>
+
+    <!-- Frame Rate (FPS) Profiles -->
+    <string name="uvc_fps_profile_title">Max / Default Frame Rate (FPS)</string>
+    <string name="uvc_fps_60">Max 60 FPS (High Frame Rate)</string>
+    <string name="uvc_fps_30">Max 30 FPS (Standard — Recommended)</string>
+    <string name="uvc_fps_24">Max 24 FPS (Cinematic)</string>
+    <string name="uvc_fps_15">Max 15 FPS (Low Bandwidth)</string>
+    <string name="uvc_fps_10">Max 10 FPS (Low Power)</string>
+    <string name="uvc_fps_5">Max 5 FPS (Ultra-Low Bandwidth)</string>
 </resources>

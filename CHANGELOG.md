@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v3.2.3] - 2026-11-18
+
+> **AI Attribution & Disclaimer**: Implemented with assistance from **Antigravity (Google DeepMind)**. Code is experimental; hardware interaction with Linux USB ConfigFS, DWC3 drivers, Camera2 HAL, and V4L2 requires root (`su`) and direct kernel ioctls.
+
+### Added
+- **Full UVC & Live Frame Rate (FPS) Configuration**: Added `Max / Default Frame Rate (FPS)` setting (`60`, `30`, `24`, `15`, `10`, `5` FPS; default `30` FPS) propagated into Linux ConfigFS (`dwFrameInterval` / `dwDefaultFrameInterval`) and the native UVC control responder (`UVC_GET_MIN` / `UVC_GET_MAX` / `UVC_GET_DEF`).
+- **24 FPS Live Cap & Persistence**: Added `24 FPS` target cap chip/pill on Android & Web Remote UI and persisted `targetFpsCap` and `lockConstantFps` preferences across sessions.
+
+### Fixed & Improved
+- **Solid 30 FPS Frame Pacing & V4L2 Double-Buffering**: Switched software pacing to hardware sensor exposure timestamps (`image.timestamp`) instead of post-encode `endNs`, bypassed redundant software frame drops when Camera2 hardware `CONTROL_AE_TARGET_FPS_RANGE.upper` matches `effectiveFps`, upgraded default `maxInFlightBuffers` to `2` (`max_in_flight_buffers_v2`), and overlapped MJPEG CPU encoding with USB ISOC draining.
+- **UI & USB Saturation Telemetry**: Status card turns red (`errorContainer`) when USB bus utilization reaches `100%`, computes exact ISOC bus bandwidth limits across `1024`/`2048`/`3072`B packet sizes, and moves the PC Web Remote Control card to the bottom of `MainScreen`.
+
+---
+
 ## [v3.2.2] - 2026-11-18
 
 ### Added

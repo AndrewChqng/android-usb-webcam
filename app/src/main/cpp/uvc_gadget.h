@@ -37,7 +37,7 @@ struct UvcFrameDesc {
     uint16_t width;
     uint16_t height;
     uint32_t defaultInterval; // in 100ns units (e.g. 333333 = 30fps)
-    uint32_t intervals[4];
+    uint32_t intervals[8];
 };
 
 struct UvcFormatDesc {

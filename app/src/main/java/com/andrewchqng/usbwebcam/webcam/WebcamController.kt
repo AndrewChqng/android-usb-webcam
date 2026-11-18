@@ -68,7 +68,7 @@ data class WebcamStreamState(
     val rotationDegrees: Int = 0,
     val mirrorHorizontal: Boolean = false,
     val jpegQuality: Int = 82,
-    val maxInFlightBuffers: Int = 1,
+    val maxInFlightBuffers: Int = 2,
     val targetFpsCap: Int = 0, // 0 = Auto (Host negotiated), or 60 / 30 / 15
     val autoFocusEnabled: Boolean = true,
     val lockConstantFps: Boolean = true,
@@ -133,6 +133,8 @@ class WebcamController private constructor(private val application: Application)
     private var previewSurface: Surface? = null
     private var activeCameraId: String? = null
     private var activeCaptureSize: Size? = null
+    @Volatile
+    private var activeCameraFpsUpper: Int = 0
 
     // Reusable pre-allocated buffers for zero-GC frame encoding (sized up to 4K UHD 3840x2160)
     private var nv21Buffer: ByteArray = ByteArray(0)
@@ -152,7 +154,9 @@ class WebcamController private constructor(private val application: Application)
         _state.update {
             it.copy(
                 jpegQuality = prefs.jpegQuality.coerceIn(1, 100),
-                maxInFlightBuffers = prefs.maxInFlightBuffers.coerceIn(1, 4)
+                maxInFlightBuffers = prefs.maxInFlightBuffers.coerceIn(1, 4),
+                targetFpsCap = prefs.targetFpsCap.coerceAtLeast(0),
+                lockConstantFps = prefs.lockConstantFps
             )
         }
     }
@@ -224,7 +228,8 @@ class WebcamController private constructor(private val application: Application)
             resProfileId,
             gadgetPrefs.resolvedWidths,
             gadgetPrefs.resolvedHeights,
-            gadgetPrefs.defaultFrameIndex
+            gadgetPrefs.defaultFrameIndex,
+            gadgetPrefs.uvcDefaultFps
         )
         if (fdOrErr < 0) {
             val errMsg = "Failed to open $videoDevicePath (errno=${-fdOrErr})"
@@ -415,6 +420,12 @@ class WebcamController private constructor(private val application: Application)
         if (_state.value.targetFpsCap == fpsCap) return
         _state.update { it.copy(targetFpsCap = fpsCap) }
         updateRepeatingRequestOnFly()
+        runCatching {
+            UserPreferencesRepository.getInstance(application).setPreference(
+                com.andrewchqng.usbwebcam.settings.AppPreference.TargetFpsCapPref,
+                fpsCap
+            )
+        }
     }
 
     fun setAutoFocusEnabled(enabled: Boolean) {
@@ -427,6 +438,12 @@ class WebcamController private constructor(private val application: Application)
         if (_state.value.lockConstantFps == locked) return
         _state.update { it.copy(lockConstantFps = locked) }
         updateRepeatingRequestOnFly()
+        runCatching {
+            UserPreferencesRepository.getInstance(application).setPreference(
+                com.andrewchqng.usbwebcam.settings.AppPreference.LockConstantFpsPref,
+                locked
+            )
+        }
     }
 
     fun setVideoStabilization(enabled: Boolean) {
@@ -519,6 +536,12 @@ class WebcamController private constructor(private val application: Application)
             )
         }
         updateRepeatingRequestOnFly()
+        runCatching {
+            UserPreferencesRepository.getInstance(application).setPreference(
+                com.andrewchqng.usbwebcam.settings.AppPreference.LockConstantFpsPref,
+                true
+            )
+        }
     }
 
     fun setPreviewEnabled(enabled: Boolean) {
@@ -690,7 +713,10 @@ class WebcamController private constructor(private val application: Application)
 
         // FPS & Auto-Exposure range
         chooseFpsRange(camId, effectiveFps, s.lockConstantFps)?.let { fpsRange ->
+            activeCameraFpsUpper = fpsRange.upper
             builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange)
+        } ?: run {
+            activeCameraFpsUpper = 0
         }
 
         // Exposure & Auto-White Balance locks and modes
@@ -834,23 +860,32 @@ class WebcamController private constructor(private val application: Application)
         }
 
         val startNs = System.nanoTime()
+        val frameTimestampNs = image.timestamp.takeIf { it > 0L } ?: startNs
 
-        // 1. Pacing against effective FPS (host negotiated FPS capped by user FPS cap)
+        // 1. Pacing against effective FPS only when hardware FPS range exceeds target FPS
         val effectiveFps = if (currentState.targetFpsCap > 0) {
             minOf(currentState.negotiatedFps, currentState.targetFpsCap)
         } else {
             currentState.negotiatedFps
         }
-        if (effectiveFps > 0 && lastSubmittedFrameNs != 0L) {
-            val minIntervalNs = (1_000_000_000L / effectiveFps) * 90 / 100
-            if (startNs - lastSubmittedFrameNs < minIntervalNs) {
+        val hwUpper = activeCameraFpsUpper
+        val needsSoftwarePacing = hwUpper <= 0 || effectiveFps < hwUpper
+        if (needsSoftwarePacing && effectiveFps > 0 && lastSubmittedFrameNs != 0L && frameTimestampNs >= lastSubmittedFrameNs) {
+            val minIntervalNs = (1_000_000_000L / effectiveFps) * 82 / 100
+            if (frameTimestampNs - lastSubmittedFrameNs < minIntervalNs) {
                 return
             }
         }
 
         // 2. Check if V4L2 ring buffer can accept a frame BEFORE doing any YUV/JPEG encoding!
+        // For MJPEG, allow one extra pipeline slot before CPU JPEG compression so encoding overlaps USB ISOC draining.
         val maxInFlight = currentState.maxInFlightBuffers
-        if (!UvcNative.nativeCanAcceptFrame(maxInFlight)) {
+        val preEncodeMaxInFlight = if (currentState.negotiatedFormat == "MJPEG") {
+            (maxInFlight + 1).coerceAtMost(4)
+        } else {
+            maxInFlight
+        }
+        if (!UvcNative.nativeCanAcceptFrame(preEncodeMaxInFlight)) {
             return
         }
 
@@ -924,7 +959,7 @@ class WebcamController private constructor(private val application: Application)
 
         if (pushed) {
             val endNs = System.nanoTime()
-            lastSubmittedFrameNs = endNs
+            lastSubmittedFrameNs = frameTimestampNs
             frameCountWindow++
             encodeTimeSumNs += (endNs - startNs)
             frameBytesSum += payloadBytes
@@ -980,6 +1015,7 @@ class WebcamController private constructor(private val application: Application)
         frameBytesSum = 0L
         lastFpsTimestampNs = 0L
         lastSubmittedFrameNs = 0L
+        activeCameraFpsUpper = 0
     }
 
     companion object {

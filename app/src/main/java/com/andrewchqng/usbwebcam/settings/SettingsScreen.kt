@@ -64,6 +64,7 @@ fun SettingsPage() {
         ) {
             AppSettings.UvcResolutionProfilePreference()
             AppSettings.UvcManageResolutionsPreference()
+            AppSettings.UvcFpsPreference()
             AppSettings.UvcExposedFormatsPreference()
             AppSettings.UvcMaxPacketPreference()
             AppSettings.UvcMaxBurstPreference()
@@ -231,7 +232,7 @@ private object AppSettings {
 
         OnClickPreference(
             title = "Manage Exposed Resolution Set",
-            summary = "${preferencesState.selectedResolutions.size} active formats • Default: ${preferencesState.defaultResolution}",
+            summary = "${preferencesState.selectedResolutions.size} active formats • Default: ${preferencesState.defaultResolution} @ ${preferencesState.uvcFpsOption.fps}fps",
             enabled = enabled,
             onClick = { showDialog = true }
         )
@@ -254,6 +255,25 @@ private object AppSettings {
                 onDismissRequest = { showDialog = false }
             )
         }
+    }
+
+    @Composable
+    fun UvcFpsPreference(
+        enabled: Boolean = true,
+        settingsViewModel: SettingsViewModel = viewModel()
+    ) {
+        val preferencesState by settingsViewModel.userPreferencesFlow.collectAsState()
+        val selected = preferencesState.uvcFpsOption
+        val options = UvcFpsOption.values
+        BasicListPreference(
+            title = stringResource(R.string.uvc_fps_profile_title),
+            options = options,
+            enabled = enabled,
+            selected = selected,
+            onPreferenceClicked = { opt ->
+                settingsViewModel.setPreference(AppPreference.UvcFpsPref, opt)
+            }
+        )
     }
 
     @Composable

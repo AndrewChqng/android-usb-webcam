@@ -19,7 +19,8 @@ object UvcNative {
         resolutionProfile: Int = 0,
         widths: IntArray? = null,
         heights: IntArray? = null,
-        defaultFrameIndex: Int = 1
+        defaultFrameIndex: Int = 1,
+        defaultFps: Int = 30
     ): Int
     external fun nativeRunEventLoop(callback: UvcEventCallback)
     external fun nativeClose()

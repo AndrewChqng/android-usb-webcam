@@ -49,6 +49,7 @@ static inline void transpose8x8_u8(
 }
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 #include <vector>
@@ -95,12 +96,38 @@ struct UvcContext {
     uint32_t frame_sequence = 0;
 
     int num_formats = 0;
+    uint8_t default_frame_index = 1;
     UvcFormatDesc formats[2]{};
 };
 
+static void populateFrameIntervals(UvcFrameDesc& frm, int capFps, uint32_t fallbackInterval) {
+    static constexpr struct { int fps; uint32_t interval; } kFpsTiers[] = {
+        {60, 166666u},
+        {30, 333333u},
+        {24, 416666u},
+        {15, 666666u},
+        {10, 1000000u},
+        {5,  2000000u},
+    };
+    memset(frm.intervals, 0, sizeof(frm.intervals));
+    int outIdx = 0;
+    for (const auto& tier : kFpsTiers) {
+        if (tier.fps <= capFps && outIdx < 8) {
+            frm.intervals[outIdx++] = tier.interval;
+        }
+    }
+    if (outIdx == 0) {
+        frm.intervals[0] = fallbackInterval;
+    }
+    frm.defaultInterval = frm.intervals[0];
+}
+
 static void initContextFormats(UvcContext* ctx, bool isYuyvOnly, int profileId,
-                               const uint16_t* widths = nullptr, const uint16_t* heights = nullptr, int numResolutions = 0) {
+                               const uint16_t* widths = nullptr, const uint16_t* heights = nullptr,
+                               int numResolutions = 0, int defaultFps = 30) {
     if (!ctx) return;
+
+    const int configuredMaxFps = std::clamp(defaultFps, 5, 60);
 
     UvcFormatDesc mjpegFmt{};
     mjpegFmt.formatIndex = 1;
@@ -120,49 +147,23 @@ static void initContextFormats(UvcContext* ctx, bool isYuyvOnly, int profileId,
             uint16_t h = heights[i];
             uint64_t pixels = static_cast<uint64_t>(w) * h;
 
-            // MJPEG frame intervals
-            uint32_t mjpegDefInterval = 333333;
-            uint32_t mjpegIntervals[4] = {0};
-            if (pixels <= 1920ULL * 1080ULL) {
-                mjpegIntervals[0] = 166666;
-                mjpegIntervals[1] = 333333;
-                mjpegIntervals[2] = 666666;
-            } else {
-                mjpegIntervals[0] = 333333;
-                mjpegIntervals[1] = 666666;
-            }
-            mjpegFmt.frames[i] = {
-                static_cast<uint8_t>(i + 1),
-                w,
-                h,
-                mjpegDefInterval,
-                {mjpegIntervals[0], mjpegIntervals[1], mjpegIntervals[2], 0}
-            };
+            // MJPEG frame intervals capped by configured max/default FPS
+            int mjpegHwMaxFps = (pixels <= 1920ULL * 1080ULL) ? 60 : 30;
+            int mjpegCapFps = std::min(configuredMaxFps, mjpegHwMaxFps);
+            mjpegFmt.frames[i] = {};
+            mjpegFmt.frames[i].frameIndex = static_cast<uint8_t>(i + 1);
+            mjpegFmt.frames[i].width = w;
+            mjpegFmt.frames[i].height = h;
+            populateFrameIntervals(mjpegFmt.frames[i], mjpegCapFps, 333333u);
 
-            // YUYV frame intervals
-            uint32_t yuyvDefInterval = 2000000;
-            uint32_t yuyvIntervals[4] = {0};
-            if (pixels <= 640ULL * 480ULL) {
-                yuyvDefInterval = 333333;
-                yuyvIntervals[0] = 333333;
-                yuyvIntervals[1] = 666666;
-                yuyvIntervals[2] = 1000000;
-            } else if (pixels <= 1280ULL * 720ULL) {
-                yuyvDefInterval = 666666;
-                yuyvIntervals[0] = 666666;
-                yuyvIntervals[1] = 1000000;
-                yuyvIntervals[2] = 2000000;
-            } else {
-                yuyvDefInterval = 2000000;
-                yuyvIntervals[0] = 2000000;
-            }
-            yuyvFmt.frames[i] = {
-                static_cast<uint8_t>(i + 1),
-                w,
-                h,
-                yuyvDefInterval,
-                {yuyvIntervals[0], yuyvIntervals[1], yuyvIntervals[2], 0}
-            };
+            // YUYV frame intervals capped by configured max/default FPS and USB bandwidth ceiling
+            int yuyvHwMaxFps = (pixels <= 640ULL * 480ULL) ? 30 : ((pixels <= 1280ULL * 720ULL) ? 15 : 5);
+            int yuyvCapFps = std::min(configuredMaxFps, yuyvHwMaxFps);
+            yuyvFmt.frames[i] = {};
+            yuyvFmt.frames[i].frameIndex = static_cast<uint8_t>(i + 1);
+            yuyvFmt.frames[i].width = w;
+            yuyvFmt.frames[i].height = h;
+            populateFrameIntervals(yuyvFmt.frames[i], yuyvCapFps, 2000000u);
         }
     } else {
         const UvcFrameDesc frm360p = {1, 640, 360, 333333, {166666, 333333, 666666, 0}};
@@ -272,6 +273,16 @@ static void initContextFormats(UvcContext* ctx, bool isYuyvOnly, int profileId,
                 yuyvFmt.frames[3] = yuyv1080p;
                 break;
         }
+        for (int i = 0; i < mjpegFmt.numFrames; ++i) {
+            uint64_t pixels = static_cast<uint64_t>(mjpegFmt.frames[i].width) * mjpegFmt.frames[i].height;
+            int capFps = std::min(configuredMaxFps, (pixels <= 1920ULL * 1080ULL) ? 60 : 30);
+            populateFrameIntervals(mjpegFmt.frames[i], capFps, 333333u);
+        }
+        for (int i = 0; i < yuyvFmt.numFrames; ++i) {
+            uint64_t pixels = static_cast<uint64_t>(yuyvFmt.frames[i].width) * yuyvFmt.frames[i].height;
+            int hwMax = (pixels <= 640ULL * 480ULL) ? 30 : ((pixels <= 1280ULL * 720ULL) ? 15 : 5);
+            populateFrameIntervals(yuyvFmt.frames[i], std::min(configuredMaxFps, hwMax), 2000000u);
+        }
     }
 
     if (isYuyvOnly) {
@@ -324,7 +335,7 @@ void fillStreamingControl(
 
     uint32_t interval = frm.defaultInterval;
     if (requestedInterval != 0) {
-        for (int i = 0; i < 4 && frm.intervals[i] != 0; ++i) {
+        for (int i = 0; i < 8 && frm.intervals[i] != 0; ++i) {
             interval = frm.intervals[i];
             if (requestedInterval <= frm.intervals[i]) {
                 break;
@@ -561,13 +572,29 @@ void handleUvcSetupEvent(UvcContext* ctx, const struct usb_ctrlrequest& ctrl, st
         case UVC_GET_MIN:
         case UVC_GET_MAX:
         case UVC_GET_DEF: {
+            int maxFmt = ctx->num_formats;
+            uint8_t fmtNum = target->bFormatIndex ? target->bFormatIndex : 1;
+            int fmtIdx = (fmtNum >= 1 && fmtNum <= maxFmt) ? (fmtNum - 1) : 0;
+            const UvcFormatDesc& fmt = ctx->formats[fmtIdx];
+
+            uint8_t frmNum = target->bFrameIndex ? target->bFrameIndex : ctx->default_frame_index;
+            int frmIdx = (frmNum >= 1 && frmNum <= fmt.numFrames) ? (frmNum - 1) : 0;
+            const UvcFrameDesc& frm = fmt.frames[frmIdx];
+
+            uint32_t reqInterval = 0u;
+            if (ctrl.bRequest == UVC_GET_MIN) {
+                reqInterval = frm.intervals[0] ? frm.intervals[0] : frm.defaultInterval;
+            } else if (ctrl.bRequest == UVC_GET_MAX) {
+                reqInterval = 0xFFFFFFFFu;
+            }
+
             struct uvc_streaming_control temp {};
             fillStreamingControl(
                 ctx,
                 &temp,
-                target->bFormatIndex ? target->bFormatIndex : 1,
-                target->bFrameIndex ? target->bFrameIndex : 2,
-                (ctrl.bRequest == UVC_GET_MIN) ? 166666 : ((ctrl.bRequest == UVC_GET_MAX) ? 1000000 : 333333)
+                fmtNum,
+                frmNum,
+                reqInterval
             );
             memcpy(resp.data, &temp, sizeof(temp));
             resp.length = ctrl.wLength < sizeof(temp) ? ctrl.wLength : sizeof(temp);
@@ -872,7 +899,8 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeOpen(
     jint resolutionProfile,
     jintArray jWidths,
     jintArray jHeights,
-    jint defaultFrameIndex
+    jint defaultFrameIndex,
+    jint defaultFps
 ) {
     std::lock_guard<std::mutex> lock(g_ctx_mutex);
 
@@ -893,8 +921,8 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeOpen(
         env->ReleaseStringUTFChars(jDevicePath, path);
         return -err;
     }
-    LOGI("Opened UVC V4L2 device: %s (fd=%d, maxPayload=%d, isYuyvOnly=%d, profile=%d, defaultFrameIndex=%d)",
-         path, fd, maxPayloadSize, isYuyvOnly, resolutionProfile, defaultFrameIndex);
+    LOGI("Opened UVC V4L2 device: %s (fd=%d, maxPayload=%d, isYuyvOnly=%d, profile=%d, defaultFrameIndex=%d, defaultFps=%d)",
+         path, fd, maxPayloadSize, isYuyvOnly, resolutionProfile, defaultFrameIndex, defaultFps);
     env->ReleaseStringUTFChars(jDevicePath, path);
 
     struct v4l2_capability cap {};
@@ -928,12 +956,13 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeOpen(
         env->ReleaseIntArrayElements(jHeights, hPtr, JNI_ABORT);
     }
 
-    initContextFormats(ctx, ctx->is_yuyv_only, resolutionProfile, localWidths, localHeights, numRes);
+    initContextFormats(ctx, ctx->is_yuyv_only, resolutionProfile, localWidths, localHeights, numRes, defaultFps);
 
     int defaultFormatIndex = 1;
     int resolvedDefFrame = (defaultFrameIndex >= 1 && defaultFrameIndex <= ctx->formats[0].numFrames)
         ? defaultFrameIndex
         : ((ctx->formats[0].numFrames > 0) ? ctx->formats[0].numFrames : 1);
+    ctx->default_frame_index = static_cast<uint8_t>(resolvedDefFrame);
     uint32_t defaultInterval = ctx->formats[0].frames[resolvedDefFrame - 1].defaultInterval;
 
     fillStreamingControl(ctx, &ctx->probe_ctrl, defaultFormatIndex, resolvedDefFrame, defaultInterval);
@@ -1062,7 +1091,9 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeRunEventLoop(
                         }
                         if (started && onStreamStateChanged) {
                             bool isMjpeg = (ctx->active_fourcc == V4L2_PIX_FMT_MJPEG);
-                            int fps = (ctx->active_interval > 0) ? static_cast<int>(10000000u / ctx->active_interval) : 30;
+                            int fps = (ctx->active_interval > 0)
+                                ? static_cast<int>((10000000u + (ctx->active_interval / 2u)) / ctx->active_interval)
+                                : 30;
                             env->CallVoidMethod(
                                 callback,
                                 onStreamStateChanged,

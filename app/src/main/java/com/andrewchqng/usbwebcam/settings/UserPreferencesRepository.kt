@@ -134,7 +134,14 @@ sealed class AppPreference(val preference: PreferenceKey<*>) {
     )
 
     data object JpegQualityPref : IntPreferenceKey("jpeg_quality_v1", 82)
-    data object MaxInFlightBuffersPref : IntPreferenceKey("max_in_flight_buffers_v1", 1)
+    data object MaxInFlightBuffersPref : IntPreferenceKey("max_in_flight_buffers_v2", 2)
+    data object UvcFpsPref : ObjectPreferenceKey<UvcFpsOption>(
+        "uvc_fps_option_v1", UvcFpsOption.Fps30,
+        fromStringPreference = { key -> UvcFpsOption.fromKey(key) },
+        toStringPreference = { it.key }
+    )
+    data object TargetFpsCapPref : IntPreferenceKey("target_fps_cap_v1", 0)
+    data object LockConstantFpsPref : BooleanPreferenceKey("lock_constant_fps_v1", true)
     data object WebServerEnabledPref : BooleanPreferenceKey("web_server_enabled", true)
     data object WebServerPortPref : IntPreferenceKey("web_server_port", 8080)
 }
@@ -221,6 +228,28 @@ sealed class UvcMaxBurstOption(key: String, @StringRes id: Int, val burst: Int) 
     }
 }
 
+sealed class UvcFpsOption(
+    key: String,
+    @StringRes id: Int,
+    val fps: Int,
+    val interval100ns: Int
+) : SealedString(key, id) {
+    data object Fps60 : UvcFpsOption("60", R.string.uvc_fps_60, 60, 166666)
+    data object Fps30 : UvcFpsOption("30", R.string.uvc_fps_30, 30, 333333)
+    data object Fps24 : UvcFpsOption("24", R.string.uvc_fps_24, 24, 416666)
+    data object Fps15 : UvcFpsOption("15", R.string.uvc_fps_15, 15, 666666)
+    data object Fps10 : UvcFpsOption("10", R.string.uvc_fps_10, 10, 1000000)
+    data object Fps5 : UvcFpsOption("5", R.string.uvc_fps_5, 5, 2000000)
+
+    companion object {
+        val values: List<UvcFpsOption>
+            get() = listOf(Fps60, Fps30, Fps24, Fps15, Fps10, Fps5)
+
+        fun fromKey(key: String): UvcFpsOption =
+            values.firstOrNull { it.key == key } ?: Fps30
+    }
+}
+
 data class UserPreferences(
     val isOnboardingDone: Boolean,
     val appTheme: AppTheme,
@@ -235,13 +264,16 @@ data class UserPreferences(
     val boostUsbIrqPriority: Boolean,
     val uvcExposedFormatsOption: UvcExposedFormatsOption = UvcExposedFormatsOption.Both,
     val uvcResolutionProfileOption: UvcResolutionProfileOption = UvcResolutionProfileOption.Max1080p,
+    val uvcFpsOption: UvcFpsOption = UvcFpsOption.Fps30,
     val selectedResolutions: Set<String> = setOf("1920x1080", "1280x720", "640x480", "640x360"),
     val defaultResolution: String = "1920x1080",
     val customResolutions: Set<String> = emptySet(),
     val customUsbProductName: String = "",
     val customUsbManufacturerName: String = "",
     val jpegQuality: Int = 82,
-    val maxInFlightBuffers: Int = 1,
+    val maxInFlightBuffers: Int = 2,
+    val targetFpsCap: Int = 0,
+    val lockConstantFps: Boolean = true,
     val webServerEnabled: Boolean = true,
     val webServerPort: Int = 8080,
 )
@@ -258,6 +290,7 @@ data class GadgetUserPreferences(
     val exposedFormats: String = "both",
     val resolutionProfile: String = "max_1080p",
     val resolutionProfileId: Int = 0,
+    val uvcDefaultFps: Int = 30,
     val customProductName: String = "",
     val customManufacturerName: String = "",
     val selectedResolutions: Set<String> = setOf("1920x1080", "1280x720", "640x480", "640x360"),
@@ -282,6 +315,7 @@ data class GadgetUserPreferences(
         if (exposedFormats != other.exposedFormats) return false
         if (resolutionProfile != other.resolutionProfile) return false
         if (resolutionProfileId != other.resolutionProfileId) return false
+        if (uvcDefaultFps != other.uvcDefaultFps) return false
         if (customProductName != other.customProductName) return false
         if (customManufacturerName != other.customManufacturerName) return false
         if (selectedResolutions != other.selectedResolutions) return false
@@ -304,6 +338,7 @@ data class GadgetUserPreferences(
         result = 31 * result + exposedFormats.hashCode()
         result = 31 * result + resolutionProfile.hashCode()
         result = 31 * result + resolutionProfileId
+        result = 31 * result + uvcDefaultFps
         result = 31 * result + customProductName.hashCode()
         result = 31 * result + customManufacturerName.hashCode()
         result = 31 * result + selectedResolutions.hashCode()
@@ -354,6 +389,7 @@ data class GadgetUserPreferences(
                 exposedFormats = userPreferences.uvcExposedFormatsOption.key,
                 resolutionProfile = userPreferences.uvcResolutionProfileOption.key,
                 resolutionProfileId = userPreferences.uvcResolutionProfileOption.profileId,
+                uvcDefaultFps = userPreferences.uvcFpsOption.fps,
                 customProductName = userPreferences.customUsbProductName,
                 customManufacturerName = userPreferences.customUsbManufacturerName,
                 selectedResolutions = userPreferences.selectedResolutions,
@@ -392,6 +428,7 @@ class UserPreferencesRepository private constructor(application: Application) {
                 boostUsbIrqPriority = AppPreference.BoostUsbIrqPriority.getValue(),
                 uvcExposedFormatsOption = AppPreference.UvcExposedFormatsPref.getValue(),
                 uvcResolutionProfileOption = AppPreference.UvcResolutionProfilePref.getValue(),
+                uvcFpsOption = AppPreference.UvcFpsPref.getValue(),
                 selectedResolutions = AppPreference.SelectedResolutionsPref.getValue(),
                 defaultResolution = AppPreference.DefaultResolutionPref.getValue(),
                 customResolutions = AppPreference.CustomResolutionsPref.getValue(),
@@ -399,6 +436,8 @@ class UserPreferencesRepository private constructor(application: Application) {
                 customUsbManufacturerName = AppPreference.CustomUsbManufacturerNamePref.getValue(),
                 jpegQuality = AppPreference.JpegQualityPref.getValue(),
                 maxInFlightBuffers = AppPreference.MaxInFlightBuffersPref.getValue(),
+                targetFpsCap = AppPreference.TargetFpsCapPref.getValue(),
+                lockConstantFps = AppPreference.LockConstantFpsPref.getValue(),
                 webServerEnabled = AppPreference.WebServerEnabledPref.getValue(),
                 webServerPort = AppPreference.WebServerPortPref.getValue(),
             )
