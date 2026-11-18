@@ -130,6 +130,8 @@ class WebcamController private constructor(private val application: Application)
     private var captureSession: CameraCaptureSession? = null
     private var imageReader: ImageReader? = null
     private var previewSurface: Surface? = null
+    private var activeCameraId: String? = null
+    private var activeCaptureSize: Size? = null
 
     // Reusable pre-allocated buffers for zero-GC frame encoding (sized up to 4K UHD 3840x2160)
     private var nv21Buffer: ByteArray = ByteArray(0)
@@ -580,6 +582,21 @@ class WebcamController private constructor(private val application: Application)
     @SuppressLint("MissingPermission")
     @Synchronized
     private fun startCameraCapture(targetW: Int, targetH: Int, targetFps: Int) {
+        val camId = _state.value.selectedCameraId
+        val captureSize = chooseOptimalSize(camId, targetW, targetH)
+
+        // Zero-teardown path: if the same camera & sensor size are already running, update FPS/params on-the-fly
+        if (cameraDevice != null &&
+            captureSession != null &&
+            imageReader != null &&
+            activeCameraId == camId &&
+            activeCaptureSize == captureSize
+        ) {
+            Timber.i("Updating active Camera2 ($camId) on-the-fly for UVC ${targetW}x${targetH}@${targetFps}fps (0ms teardown)")
+            updateRepeatingRequestOnFly()
+            return
+        }
+
         stopCameraCapture()
 
         // Use URGENT_DISPLAY priority (-8) so Android keeps the frame encoder on big cores even with screen off
@@ -587,17 +604,17 @@ class WebcamController private constructor(private val application: Application)
         val handler = Handler(thread.looper)
         cameraThread = thread
         cameraHandler = handler
+        activeCameraId = camId
+        activeCaptureSize = captureSize
 
-        val camId = _state.value.selectedCameraId
-        val captureSize = chooseOptimalSize(camId, targetW, targetH)
         Timber.i("Starting Camera2 ($camId) capture at ${captureSize.width}x${captureSize.height} for UVC ${targetW}x${targetH}@${targetFps}fps")
 
-        // 4 ImageReader buffers allow smooth triple-buffered camera ISP output while 1 frame is being compressed
+        // 3 ImageReader buffers: 1 being read/encoded, 1 queued, 1 written by ISP (minimal non-stalling latency)
         val reader = ImageReader.newInstance(
             captureSize.width,
             captureSize.height,
             ImageFormat.YUV_420_888,
-            4
+            3
         )
         imageReader = reader
 
@@ -683,10 +700,29 @@ class WebcamController private constructor(private val application: Application)
             builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, 0.0f) // Infinity / hyperfocal
         }
 
-        // Video stabilization
+        // Disable Zero-Shutter-Lag (ZSL) reprocessing buffers to cut 60-100ms HAL pipeline latency
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            builder.set(CaptureRequest.CONTROL_ENABLE_ZSL, false)
+        }
+
+        // Video stabilization: Prefer zero-latency physical OIS over crop/warp-heavy EIS
+        val oisSupported = runCatching {
+            val chars = cameraManager.getCameraCharacteristics(camId)
+            val oisModes = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION)
+            oisModes?.contains(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON) == true
+        }.getOrDefault(false)
+
         if (s.videoStabilization) {
-            builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON)
+            if (oisSupported) {
+                builder.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON)
+                builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+            } else {
+                builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON)
+            }
         } else {
+            if (oisSupported) {
+                builder.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF)
+            }
             builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
         }
 
@@ -905,6 +941,8 @@ class WebcamController private constructor(private val application: Application)
         val handlerToQuit = cameraHandler
         cameraThread = null
         cameraHandler = null
+        activeCameraId = null
+        activeCaptureSize = null
 
         runCatching { captureSession?.close() }
         captureSession = null

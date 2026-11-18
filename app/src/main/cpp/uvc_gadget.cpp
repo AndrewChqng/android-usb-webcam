@@ -45,6 +45,7 @@ struct MmapBuffer {
 struct UvcContext {
     int v4l2_fd = -1;
     int stop_efd = -1;
+    int dma_latency_fd = -1;
     uint32_t max_payload_size = 1024;
 
     uint8_t current_control = 0; // UVC_VS_PROBE_CONTROL or UVC_VS_COMMIT_CONTROL
@@ -347,10 +348,27 @@ void stopV4l2StreamingLocked(UvcContext* ctx, bool callStreamOffIoctl = true) {
         req.memory = V4L2_MEMORY_MMAP;
         ioctl(ctx->v4l2_fd, VIDIOC_REQBUFS, &req);
     }
+
+    if (ctx->dma_latency_fd >= 0) {
+        close(ctx->dma_latency_fd);
+        ctx->dma_latency_fd = -1;
+    }
 }
 
 bool startV4l2StreamingLocked(UvcContext* ctx) {
     stopV4l2StreamingLocked(ctx, false);
+
+    // Acquire PM QoS CPU DMA latency lock (0 us) while streaming to prevent deep C-state USB jitter
+    int qosFd = open("/dev/cpu_dma_latency", O_WRONLY | O_CLOEXEC);
+    if (qosFd >= 0) {
+        int32_t targetLatency = 0;
+        if (write(qosFd, &targetLatency, sizeof(targetLatency)) == sizeof(targetLatency)) {
+            ctx->dma_latency_fd = qosFd;
+            LOGI("Acquired PM QoS /dev/cpu_dma_latency=0 lock");
+        } else {
+            close(qosFd);
+        }
+    }
 
     struct v4l2_format fmt {};
     fmt.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
@@ -359,7 +377,9 @@ bool startV4l2StreamingLocked(UvcContext* ctx) {
     fmt.fmt.pix.pixelformat = ctx->active_fourcc;
     fmt.fmt.pix.field = V4L2_FIELD_NONE;
     if (ctx->active_fourcc == V4L2_PIX_FMT_MJPEG) {
-        fmt.fmt.pix.sizeimage = static_cast<uint32_t>(ctx->active_width) * ctx->active_height * 2u;
+        uint32_t rawBytes = static_cast<uint32_t>(ctx->active_width) * ctx->active_height * 2u;
+        uint32_t clamped = std::max<uint32_t>(rawBytes / 2u, 2u * 1024u * 1024u);
+        fmt.fmt.pix.sizeimage = std::min<uint32_t>(rawBytes, clamped);
     } else {
         fmt.fmt.pix.bytesperline = ctx->active_width * 2u;
         fmt.fmt.pix.sizeimage = fmt.fmt.pix.bytesperline * ctx->active_height;
@@ -1234,6 +1254,19 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativePushYuvToYuyvFrame(
                     yuyv.val[1] = uvVec;
                     vst2q_u8(dstRow + x * 2, yuyv);
                 }
+            } else if (uvPixelStride == 1) {
+                // Planar I420 / YV12 source -> YUYV via NEON
+                for (; x + 16 <= dstW; x += 16) {
+                    uint8x16_t yVec = vld1q_u8(yRow + x);
+                    uint8x8_t uVec = vld1_u8(uRow + (x >> 1));
+                    uint8x8_t vVec = vld1_u8(vRow + (x >> 1));
+                    uint8x8x2_t uvZip = vzip_u8(uVec, vVec);
+                    uint8x16_t uvVec = vcombine_u8(uvZip.val[0], uvZip.val[1]);
+                    uint8x16x2_t yuyv;
+                    yuyv.val[0] = yVec;
+                    yuyv.val[1] = uvVec;
+                    vst2q_u8(dstRow + x * 2, yuyv);
+                }
             }
 #endif
             for (; x < dstW; x += 2) {
@@ -1374,8 +1407,28 @@ Java_com_andrewchqng_usbwebcam_webcam_UvcNative_nativeYuv420ToNv21(
                     vuDst[cx * 2 + 1] = uvSrc[cx * 2 + 0];
                 }
             }
+        } else if (uvPixelStride == 1) {
+            // Planar I420 -> NV21 via ARM NEON
+            for (int cy = 0; cy < chromaH; ++cy) {
+                const uint8_t* __restrict uRow = uPlane + cy * uvRowStride;
+                const uint8_t* __restrict vRow = vPlane + cy * uvRowStride;
+                uint8_t* __restrict vuRow = dstVU + cy * dstW;
+                int cx = 0;
+#if defined(__aarch64__) || defined(__ARM_NEON__)
+                for (; cx + 16 <= chromaW; cx += 16) {
+                    uint8x16x2_t vu;
+                    vu.val[0] = vld1q_u8(vRow + cx);
+                    vu.val[1] = vld1q_u8(uRow + cx);
+                    vst2q_u8(vuRow + cx * 2, vu);
+                }
+#endif
+                for (; cx < chromaW; ++cx) {
+                    vuRow[cx * 2 + 0] = vRow[cx];
+                    vuRow[cx * 2 + 1] = uRow[cx];
+                }
+            }
         } else {
-            // Planar or arbitrary stride
+            // Arbitrary stride fallback
             for (int cy = 0; cy < chromaH; ++cy) {
                 const uint8_t* __restrict uRow = uPlane + cy * uvRowStride;
                 const uint8_t* __restrict vRow = vPlane + cy * uvRowStride;
