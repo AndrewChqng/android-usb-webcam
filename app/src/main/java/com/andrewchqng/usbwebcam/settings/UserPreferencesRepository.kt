@@ -158,7 +158,6 @@ sealed class UvcResolutionProfileOption(
     val profileId: Int,
     val shortLabel: String
 ) : SealedString(key, id) {
-    data object Max144p : UvcResolutionProfileOption("max_144p", R.string.uvc_res_max_144p, 9, "144p")
     data object Max240p : UvcResolutionProfileOption("max_240p", R.string.uvc_res_max_240p, 10, "240p")
     data object Max360p : UvcResolutionProfileOption("max_360p", R.string.uvc_res_max_360p, 11, "360p")
     data object Max480p : UvcResolutionProfileOption("max_480p", R.string.uvc_res_max_480p, 12, "480p")
@@ -170,13 +169,14 @@ sealed class UvcResolutionProfileOption(
 
     companion object {
         val maxTiers: List<UvcResolutionProfileOption>
-            get() = listOf(Max144p, Max240p, Max360p, Max480p, Max720p, Max1080p, Max1440p, Max4K)
+            get() = listOf(Max240p, Max360p, Max480p, Max720p, Max1080p, Max1440p, Max4K)
 
         val values: List<UvcResolutionProfileOption>
             get() = maxTiers + Custom
 
         fun fromKey(key: String): UvcResolutionProfileOption {
             return when (key) {
+                "max_144p" -> Max240p
                 "only_1080p" -> Max1080p
                 "only_720p" -> Max720p
                 "only_4k" -> Max4K
@@ -484,7 +484,7 @@ class UserPreferencesRepository private constructor(application: Application) {
     }
 
     fun addCustomResolution(width: Int, height: Int): Boolean {
-        if (width < 16 || height < 16 || width > 7680 || height > 7680) return false
+        if (minOf(width, height) < 240 || width > 7680 || height > 7680) return false
         val w = if (width % 2 != 0) width - 1 else width
         val h = if (height % 2 != 0) height - 1 else height
         val key = "${w}x${h}"

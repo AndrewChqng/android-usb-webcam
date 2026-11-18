@@ -113,7 +113,9 @@ fun ResolutionManagerDialog(
             ) {
                 // Section 1: Discrete Max Resolution Slider
                 val tiers = UvcResolutionProfileOption.maxTiers
-                val tierIdx = tiers.indexOf(currentProfile).let { if (it >= 0) it else 5 } // Default visual position 1080p when Custom
+                val tierIdx = tiers.indexOf(currentProfile).let {
+                    if (it >= 0) it else tiers.indexOf(UvcResolutionProfileOption.Max1080p).coerceAtLeast(0)
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -129,7 +131,7 @@ fun ResolutionManagerDialog(
                         fontWeight = FontWeight.SemiBold
                     )
                     Text(
-                        text = "144p – 2160p",
+                        text = "240p – 2160p",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

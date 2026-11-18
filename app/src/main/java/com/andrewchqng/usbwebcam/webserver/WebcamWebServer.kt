@@ -750,9 +750,9 @@ class WebcamWebServer private constructor(private val application: Application) 
             <span id="lbl-res-profile">Max Resolution: 1080p</span>
             <span id="lbl-res-info" style="font-size: 11px; color: var(--text-muted);">(Click Restart to apply)</span>
           </div>
-          <input type="range" id="rng-max-res" min="0" max="7" step="1" value="5" onchange="onMaxResSlider(this.value)" oninput="onMaxResPreview(this.value)">
+          <input type="range" id="rng-max-res" min="0" max="6" step="1" value="4" onchange="onMaxResSlider(this.value)" oninput="onMaxResPreview(this.value)">
           <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); margin-top: 2px;">
-            <span>144</span><span>240</span><span>360</span><span>480</span><span>720</span><span>1080</span><span>1440</span><span>4K</span>
+            <span>240</span><span>360</span><span>480</span><span>720</span><span>1080</span><span>1440</span><span>4K</span>
           </div>
           <details style="margin-top: 8px; font-size: 13px;">
             <summary style="cursor: pointer; color: var(--accent); font-weight: 500;">
@@ -1038,8 +1038,8 @@ class WebcamWebServer private constructor(private val application: Application) 
       }
     }
 
-    const RES_TIERS = ['max_144p', 'max_240p', 'max_360p', 'max_480p', 'max_720p', 'max_1080p', 'max_1440p', 'max_4k'];
-    const RES_LABELS = ['144p', '240p', '360p', '480p', '720p', '1080p', '1440p', '2160p (4K)'];
+    const RES_TIERS = ['max_240p', 'max_360p', 'max_480p', 'max_720p', 'max_1080p', 'max_1440p', 'max_4k'];
+    const RES_LABELS = ['240p', '360p', '480p', '720p', '1080p', '1440p', '2160p (4K)'];
 
     function onMaxResPreview(idx) {
       const i = Math.max(0, Math.min(RES_TIERS.length - 1, parseInt(idx) || 0));

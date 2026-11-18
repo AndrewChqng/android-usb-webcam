@@ -76,8 +76,8 @@ data class ResolutionItem(
             if (parts.size != 2) return null
             val w = parts[0].toIntOrNull() ?: return null
             val h = parts[1].toIntOrNull() ?: return null
-            // Technical limits: minimum 16x16 (JPEG DCT macroblock boundary), max 7680x7680 (8K)
-            if (w < 16 || h < 16 || w > 7680 || h > 7680) return null
+            // Technical limits: minimum 240px short side (sub-240p Camera2 HAL streams exhibit ISP/stride artifacts), max 7680
+            if (minOf(w, h) < 240 || w > 7680 || h > 7680) return null
             return ResolutionItem(w, h, isCustom)
         }
 
@@ -92,16 +92,13 @@ data class ResolutionItem(
             ResolutionItem(640, 360),
             ResolutionItem(352, 288),
             ResolutionItem(320, 240),
-            ResolutionItem(256, 144),
-            ResolutionItem(176, 144),
             // Standard vertical companion resolutions (for mobile/OBS streaming)
             ResolutionItem(1080, 1920),
             ResolutionItem(720, 1280),
             ResolutionItem(1440, 2560),
             ResolutionItem(2160, 3840),
             ResolutionItem(360, 640),
-            ResolutionItem(240, 320),
-            ResolutionItem(144, 176)
+            ResolutionItem(240, 320)
         )
 
         fun discoverSensorResolutions(cameraManager: CameraManager): List<ResolutionItem> {
@@ -114,10 +111,10 @@ data class ResolutionItem(
                     val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
                     val yuvSizes = map?.getOutputSizes(ImageFormat.YUV_420_888) ?: continue
                     for (s in yuvSizes) {
-                        // Do not hide resolutions considered too small unless for technical reasons:
-                        // 1. width >= 16 and height >= 16 (minimum DCT macroblock / block size for JPEG and YUV encoders)
-                        // 2. width and height are even (required for YUV 4:2:0 and YUYV 4:2:2 chroma subsampling)
-                        if (s.width >= 16 && s.height >= 16 && s.width % 2 == 0 && s.height % 2 == 0) {
+                        // Technical limits:
+                        // 1. short side >= 240 (sub-240p HAL ISP streams produce visual artifacts)
+                        // 2. even dimensions (required for YUV 4:2:0 / YUYV 4:2:2 chroma subsampling)
+                        if (minOf(s.width, s.height) >= 240 && s.width % 2 == 0 && s.height % 2 == 0) {
                             found.add(ResolutionItem(s.width, s.height))
                             // If landscape, also offer matching portrait companion
                             if (s.width > s.height && s.width <= 3840) {
@@ -132,7 +129,6 @@ data class ResolutionItem(
         }
 
         private val COMMON_TIERS: List<Pair<String, ResolutionItem>> = listOf(
-            "max_144p" to ResolutionItem(256, 144),
             "max_240p" to ResolutionItem(320, 240),
             "max_360p" to ResolutionItem(640, 360),
             "max_480p" to ResolutionItem(640, 480),
@@ -144,7 +140,7 @@ data class ResolutionItem(
 
         fun getPresetResolutions(presetKey: String): Pair<List<ResolutionItem>, ResolutionItem> {
             val tierIdx = COMMON_TIERS.indexOfFirst { it.first == presetKey }
-            val resolvedIdx = if (tierIdx >= 0) tierIdx else 5 // Default to max_1080p
+            val resolvedIdx = if (tierIdx >= 0) tierIdx else COMMON_TIERS.indexOfFirst { it.first == "max_1080p" }.coerceAtLeast(0)
             val items = COMMON_TIERS.take(resolvedIdx + 1).map { it.second }.reversed()
             val defaultItem = COMMON_TIERS[resolvedIdx].second
             return items to defaultItem

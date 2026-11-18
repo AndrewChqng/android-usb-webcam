@@ -104,7 +104,6 @@
 
     <!-- Resolution Profiles -->
     <string name="uvc_resolution_profile_title">Max Resolution</string>
-    <string name="uvc_res_max_144p">Max 144p QCIF (176x144)</string>
     <string name="uvc_res_max_240p">Max 240p QVGA (up to 320x240)</string>
     <string name="uvc_res_max_360p">Max 360p nHD (up to 640x360)</string>
     <string name="uvc_res_max_480p">Max 480p SD (up to 640x480)</string>

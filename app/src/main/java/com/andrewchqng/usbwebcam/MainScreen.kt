@@ -447,7 +447,9 @@ fun MainPage(
         Card(modifier = Modifier.fillMaxWidth()) {
             val currentProfile = userPreferences.uvcResolutionProfileOption
             val tiers = UvcResolutionProfileOption.maxTiers
-            val tierIdx = tiers.indexOf(currentProfile).let { if (it >= 0) it else 5 }
+            val tierIdx = tiers.indexOf(currentProfile).let {
+                if (it >= 0) it else tiers.indexOf(UvcResolutionProfileOption.Max1080p).coerceAtLeast(0)
+            }
 
             Column(
                 modifier = Modifier
