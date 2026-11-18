@@ -10,24 +10,47 @@
 android-usb-webcam/
 ├── app/
 │   ├── src/main/
-│   │   ├── cpp/                     # High-performance native C++ layer
-│   │   │   ├── uvc_gadget.h         # V4L2/UVC ioctls, format descriptors, frame structs
-│   │   │   └── uvc_gadget.cpp       # V4L2 streaming event loop, Bilinear scaler & PTZ mapper
-│   │   ├── java/com/andrewchqng/usbwebcam/
-│   │   │   ├── hid_utils/           # Linux ConfigFS driver & RootService IPC
-│   │   │   │   ├── CharacterDeviceManager.kt # ConfigFS gadget builder, IRQ booster
-│   │   │   │   └── UsbGadgetService.kt       # libsu RootService IPC daemon
-│   │   │   ├── settings/            # Preferences & Resolution models
-│   │   │   │   ├── ResolutionItem.kt         # Sensor resolution discovery & aspect ratios
-│   │   │   │   ├── ResolutionManagerDialog.kt# Compose checklist & aspect ratio filter dialog
-│   │   │   │   └── UserPreferencesRepository.kt # SharedPreferences & Gadget preferences
-│   │   │   ├── webcam/              # Camera2 & UVC orchestration
-│   │   │   │   ├── UvcNative.kt              # JNI external bridge
-│   │   │   │   ├── WebcamController.kt       # Camera2 capture session & format coordinator
-│   │   │   │   └── WebcamForegroundService.kt# Android foreground service host
-│   │   │   ├── webserver/           # Embedded Web Remote server
-│   │   │   │   └── WebcamWebServer.kt        # HTTP/JSON dashboard & control endpoints
-│   │   │   └── MainScreen.kt        # Primary Jetpack Compose UI
+│   │   ├── assets/web/                      # Embedded Web Remote frontend assets
+│   │   │   ├── index.html                   # Web Remote UI markup
+│   │   │   ├── styles.css                   # Web Remote dark-mode stylesheet
+│   │   │   └── app.js                       # Client polling & control logic
+│   │   ├── cpp/                             # Native C++ V4L2/UVC & SIMD layer
+│   │   │   ├── CMakeLists.txt               # NDK CMake target (`usb_webcam`)
+│   │   │   ├── uvc_gadget.h                 # V4L2/UVC state, descriptor structs & declarations
+│   │   │   ├── uvc_gadget.cpp               # V4L2 ring buffer queue & JNI entrypoints
+│   │   │   ├── uvc_protocol.cpp             # UVC setup/data event & probe/commit negotiation
+│   │   │   └── yuv_convert.cpp              # ARM NEON rotation, PTZ crop/scale & YUYV/NV21 conversion
+│   │   └── java/com/andrewchqng/usbwebcam/
+│   │       ├── hid_utils/                   # Linux ConfigFS gadget & root shell setup
+│   │       │   ├── CharacterDeviceManager.kt# ConfigFS gadget builder, V4L2 discovery, IRQ boost
+│   │       │   └── UvcFrameConfigBuilder.kt # UVC ConfigFS frame descriptor & command generator
+│   │       ├── settings/                    # Preferences & Resolution models
+│   │       │   ├── ResolutionItem.kt        # Sensor resolution discovery & aspect ratios
+│   │       │   ├── ResolutionManagerDialog.kt # Compose checklist & aspect ratio filter dialog
+│   │       │   ├── SettingsScreen.kt        # Application settings UI
+│   │       │   └── UserPreferencesRepository.kt # SharedPreferences & gadget preferences
+│   │       ├── ui/main/                     # Modular MainScreen Compose cards
+│   │       │   ├── StatusActionCard.kt      # Start/Stop button, live FPS/USB utilization status
+│   │       │   ├── ResolutionProfileCard.kt # Quick resolution/FPS selector & manager launcher
+│   │       │   ├── CameraEncodingCard.kt    # Lens picker, rotation/mirror & MJPEG quality
+│   │       │   ├── CameraIspPtzCard.kt      # Zoom, Pan/Tilt, Camera2 PTZ toggle, AF/AE/AWB/Torch
+│   │       │   ├── ViewfinderPreviewCard.kt # Optional live camera viewfinder preview
+│   │       │   └── WebRemoteControlCard.kt  # Embedded HTTP server status & address copy card
+│   │       ├── webcam/                      # Camera2 & UVC orchestration
+│   │       │   ├── Camera2ConfigHelper.kt   # Pure Camera2 size/FPS selection, PTZ crop & USB metrics
+│   │       │   ├── UvcNative.kt             # JNI external bridge
+│   │       │   ├── WebcamController.kt      # Camera2 capture session & frame pipeline coordinator
+│   │       │   ├── WebcamForegroundService.kt # Android foreground service & wake lock host
+│   │       │   └── WebcamModels.kt          # Stream state, lens info & direct byte buffer stream
+│   │       ├── webserver/                   # Embedded Web Remote server
+│   │       │   └── WebcamWebServer.kt       # Asset serving & `/api/*` JSON control endpoints
+│   │       ├── MainActivity.kt              # Edge-to-edge activity host & permissions
+│   │       ├── MainScreen.kt                # Top-level Jetpack Compose screen layout
+│   │       └── MainViewModel.kt             # Screen state holder & controller bindings
+│   └── src/test/java/com/andrewchqng/usbwebcam/
+│       ├── hid_utils/UvcFrameConfigBuilderTest.kt # ConfigFS frame ordering & command unit tests
+│       ├── settings/ResolutionItemTest.kt         # Resolution parsing & boundary unit tests
+│       └── webcam/Camera2ConfigHelperTest.kt      # Camera2 size, FPS, PTZ crop & USB metric tests
 ```
 
 ---
@@ -35,53 +58,57 @@ android-usb-webcam/
 ## 2. Invariants & Rules for Agents
 
 1. **Kernel ConfigFS Index Order**:
-   - Frame directories in `streaming/mjpeg/m/` and `streaming/uncompressed/u/` must follow `f%02d_%dx%d` naming format.
-   - Linux `f_uvc` enumerates subdirectories strictly in alphabetical order. Failure to pad with two digits scrambles `bFrameIndex` descriptors.
-   - Max frames supported by `UvcFormatDesc.frames` in `uvc_gadget.h` is **16**.
+   - Frame directories generated by `UvcFrameConfigBuilder.kt` under `streaming/mjpeg/m/` and `streaming/uncompressed/u/` must use the zero-padded `f%02d_%dx%d` naming format.
+   - Linux `f_uvc` enumerates subdirectories strictly in alphabetical order. Failure to zero-pad scrambles host `bFrameIndex` descriptors.
+   - Maximum frames supported by `UvcFormatDesc.frames` in `uvc_gadget.h` is **16**.
 
-2. **Bash Variable Interpolation in `Shell.cmd()`**:
-   - Never write `${UVC/subpath...}`. Bash parses `${VAR/pattern/replacement}` as substring replacement and truncates the path.
-   - Always write `"${UVC}/$subpath"`.
+2. **Bash Variable Interpolation & Persistent Root Shell (`Shell.cmd()`)**:
+   - Never write `${UVC/subpath...}`. Bash parses `${VAR/pattern/replacement}` as substring replacement and truncates the path. Always write `"${UVC}/$subpath"`.
+   - `libsu` runs commands inside a persistent daemon root shell. Never call `exit 0` inside shell snippets passed to `Shell.cmd()`, as it terminates the shared root shell process.
 
-3. **Webcam Web Server JavaScript Strings**:
-   - `INDEX_HTML` inside `WebcamWebServer.kt` is a Kotlin multiline string `"""..."""`.
-   - Any raw JavaScript template literals using `${...}` will be intercepted by Kotlin's string interpolation compiler.
-   - Always use standard JavaScript string concatenation `+` or escape with `${'$'}{...}`.
+3. **Web Remote Assets**:
+   - Frontend files live in `app/src/main/assets/web/` (`index.html`, `styles.css`, `app.js`) and are lazily loaded and served by `WebcamWebServer.kt`.
+   - Keep frontend HTML, CSS, and JavaScript inside the assets directory rather than inline Kotlin string literals.
 
-4. **Git Commits & Authorship**:
-   - Always append `Co-authored-by: Antigravity <noreply@google.com>` to all git commit messages.
-   - Default Git author when unset: `AndrewChqng <44511577+AndrewChqng@users.noreply.github.com>`.
-   - Never push or create pull requests without explicit user authorization.
+4. **Pure Logic Separation & Camera2 Sessions**:
+   - Keep pure Camera2/PTZ/pacing/USB bus math in `Camera2ConfigHelper.kt`, UVC frame generation in `UvcFrameConfigBuilder.kt`, and resolution parsing in `ResolutionItem.kt` free of Android framework dependencies so JVM unit tests run without a device.
+   - Use `SessionConfiguration` on API 28+ (`Build.VERSION_CODES.P`) with the legacy `createCaptureSession` fallback restricted to API 26–27 in `WebcamController.kt`.
 
-5. **Privileged Host Commands**:
-   - When running host commands requiring root/sudo privileges, use `pkexec` (e.g. `pkexec <cmd>`) to avoid hanging non-interactive sessions. On-device root commands use `adb shell su -c '<cmd>'` or `libsu` in Kotlin.
+5. **Release Signing & Local Secrets**:
+   - Release signing in `app/build.gradle.kts` reads gitignored `keystore.properties` (`storeFile`, `storePassword`, `keyAlias`, `keyPassword`) or environment variables (`ANDROID_KEYSTORE_PATH`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`), falling back to the debug keystore when unset.
+   - Never commit keystores, `keystore.properties`, `local.properties`, credentials, or machine-specific paths.
+
+6. **Git Hygiene**:
+   - Do not push commits, create tags, publish releases, or open pull requests without explicit authorization.
 
 ---
 
-## 3. Build & Deployment Commands
+## 3. Build, Test & Deployment Commands
+
+### Prerequisites
+- JDK 17 or JDK 21 configured via `JAVA_HOME` (and on `PATH`)
+- Android SDK & NDK configured via `ANDROID_HOME` (or `local.properties`)
+
+### Run JVM Unit Tests
+```bash
+./gradlew testDebugUnitTest
+```
 
 ### Build Release APK
 ```bash
-export JAVA_HOME=/home/roboy/.jdks/jdk-21
-export ANDROID_HOME=/home/roboy/Android/Sdk
-export PATH=$JAVA_HOME/bin:$PATH
 ./gradlew assembleRelease
 ```
 *Output APK location*: `app/build/outputs/apk/release/app-release.apk`
 
-### Install over ADB Wi-Fi or USB
+### Install & Inspect over ADB
 ```bash
-# Wi-Fi (OnePlus 12):
-adb -s 192.168.0.20:5555 install -r -d app/build/outputs/apk/release/app-release.apk
+# Install on default connected device (or specify -s <device-serial-or-ip:5555>)
+adb install -r app/build/outputs/apk/release/app-release.apk
+adb -s <device-serial-or-ip:5555> install -r app/build/outputs/apk/release/app-release.apk
 
-# USB:
-adb -s 789e7fc install -r -d app/build/outputs/apk/release/app-release.apk
-```
-
-### Inspect Kernel UVC Gadget Descriptors via Root
-```bash
-adb -s 192.168.0.20:5555 shell su -c 'ls -la /config/usb_gadget/g1/functions/uvc.0/streaming/mjpeg/m/'
-adb -s 192.168.0.20:5555 shell su -c 'cat /config/usb_gadget/g1/functions/uvc.0/streaming/mjpeg/m/bDefaultFrameIndex'
+# Inspect kernel UVC gadget descriptors via root
+adb shell su -c 'ls -la /config/usb_gadget/g1/functions/uvc.0/streaming/mjpeg/m/'
+adb shell su -c 'cat /config/usb_gadget/g1/functions/uvc.0/streaming/mjpeg/m/bDefaultFrameIndex'
 ```
 
 ---
@@ -91,5 +118,5 @@ adb -s 192.168.0.20:5555 shell su -c 'cat /config/usb_gadget/g1/functions/uvc.0/
 When porting to other Android devices:
 1. Verify ConfigFS mount point: default is `/config/usb_gadget/g1`.
 2. Inspect UDC controller name: `ls /sys/class/udc`.
-3. Check V4L2 device node: USB UVC gadget usually attaches to `/dev/video2` or `/dev/video3`. Auto-discovery logic in `CharacterDeviceManager.discoverUvcVideoDevicePath` scans `/sys/class/video4linux/video*`.
+3. Check V4L2 device node: USB UVC gadget typically attaches to `/dev/video2` or `/dev/video3`. Auto-discovery logic in `CharacterDeviceManager.discoverUvcVideoDevicePath` scans `/sys/class/video4linux/video*`.
 4. Ensure kernel supports `CONFIG_USB_CONFIGFS_F_UVC=y` and `CONFIG_USB_F_UVC=y`.
