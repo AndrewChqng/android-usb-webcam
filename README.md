@@ -13,7 +13,7 @@ Because it presents itself as a true standard USB webcam, it requires **zero dri
 Forked and repurposed from the ConfigFS and `libsu` foundation of [`Arian04/android-hid-client`](https://github.com/Arian04/android-hid-client).
 
 > [!IMPORTANT]
-> **Contributions & Testing Welcome!** This project has currently only been hardware-verified on a single device (`OnePlus 12` into a Linux host). Community testing across other Android phones, kernels, root managers (Magisk / KernelSU / APatch), and host OSes (Windows, macOS, Linux, ChromeOS) — plus bug reports, compatibility reports, and pull requests — is strongly encouraged and greatly appreciated!
+> **Contributions & Testing Welcome!** This project has currently only been hardware-verified on a single device (`OnePlus 12` into Linux and Windows hosts). Community testing across other Android phones, kernels, root managers (Magisk / KernelSU / APatch), and host OSes (macOS, ChromeOS, and additional Linux/Windows setups) — plus bug reports, compatibility reports, and pull requests — is strongly encouraged and greatly appreciated!
 
 ---
 
@@ -69,6 +69,7 @@ Forked and repurposed from the ConfigFS and `libsu` foundation of [`Arian04/andr
   - **SoC / USB Controller**: Qualcomm Snapdragon 8 Gen 3 (`SM8650`, `pineapple`) / Synopsys DWC3 (`a600000.dwc3`)
   - **OS & Kernel**: OxygenOS 14 (Android 14), GKI Kernel `6.1.68-android14-11`
   - **Root Manager**: KernelSU (`ksud`)
+  - **Verified Host OSes**: **Linux** (`uvcvideo` / V4L2 / PipeWire) and **Windows** (`usbvideo.sys`)
   - **Verified Streaming Modes (into Linux x86_64 host via `uvcvideo` / V4L2 / PipeWire with simultaneous ADB active)**:
     - `1920×1080` MJPEG @ 30 fps (~120–250 KB/frame)
     - `1280×720` MJPEG @ 30 fps (~35 KB/frame)
@@ -269,7 +270,7 @@ cd android-usb-webcam
 
 **Contributions, pull requests, and community testing are very welcome!** Because Linux ConfigFS `f_uvc`, Camera2 HAL implementations, and OEM USB controllers vary significantly across devices, real-world testing is one of the most valuable ways to help:
 
-- **Hardware & OS Testing**: Test on additional Android devices (Pixel, Samsung, Xiaomi, Nothing, Sony, Motorola, custom ROMs/kernels), root solutions (Magisk, KernelSU, APatch), USB hubs/cables, and host systems (Windows `usbvideo.sys`, macOS, ChromeOS, Linux). Share your findings in [Issues](https://github.com/AndrewChqng/android-usb-webcam/issues) or submit a PR to update the **Verified & Tested On** list.
+- **Hardware & OS Testing**: Test on additional Android devices (Pixel, Samsung, Xiaomi, Nothing, Sony, Motorola, custom ROMs/kernels), root solutions (Magisk, KernelSU, APatch), USB hubs/cables, and host systems (macOS, ChromeOS, and additional Windows/Linux setups). Share your findings in [Issues](https://github.com/AndrewChqng/android-usb-webcam/issues) or submit a PR to update the **Verified & Tested On** list.
 - **Bug Reports**: Use the in-app **Troubleshooting → Export debug logs** tool and include your device model, kernel version, root method, and host OS when filing an issue.
 - **Pull Requests**: Bug fixes, device/HAL compatibility improvements, Web Remote / UI enhancements, and new unit tests are all welcome. Before opening a PR:
   1. Review [agent.md](agent.md) and [learnings.md](learnings.md) for ConfigFS, `libsu`, and V4L2 invariants.
