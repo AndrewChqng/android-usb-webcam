@@ -45,14 +45,12 @@ Forked and repurposed from the ConfigFS and `libsu` foundation of [`Arian04/andr
     </td>
   </tr>
   <tr>
-    <td align="center" colspan="3">
+    <td align="center">
       <img src="images/screenshot-troubleshooting.png" width="240" alt="Kernel & Device Diagnostics" /><br/>
       <sub><b>Kernel &amp; Device Diagnostics</b></sub>
     </td>
-  </tr>
-  <tr>
-    <td align="center" colspan="3">
-      <img src="images/screenshot-host-demo.png" width="540" alt="Host PC Demo — Native Linux V4L2 Webcam in Kamoso" /><br/>
+    <td align="center" colspan="2">
+      <img src="images/screenshot-host-demo.png" width="500" alt="Host PC Demo — Native Linux V4L2 Webcam in Kamoso" /><br/>
       <sub><b>Host PC Demo — Native Linux V4L2 Webcam (Kamoso)</b></sub>
     </td>
   </tr>
