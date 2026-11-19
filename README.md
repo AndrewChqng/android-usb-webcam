@@ -13,6 +13,47 @@ Forked and repurposed from the ConfigFS and `libsu` foundation of [`Arian04/andr
 
 ---
 
+## 📸 Screenshots
+
+<table>
+  <tr>
+    <td align="center">
+      <img src="images/screenshot-main.png" width="240" alt="Main & Live Telemetry" /><br/>
+      <sub><b>Main &amp; Live Telemetry</b></sub>
+    </td>
+    <td align="center">
+      <img src="images/screenshot-controls.png" width="240" alt="FPS, V4L2 Queue & PTZ Controls" /><br/>
+      <sub><b>FPS, V4L2 Queue &amp; PTZ</b></sub>
+    </td>
+    <td align="center">
+      <img src="images/screenshot-isp.png" width="240" alt="ISP, White Balance & Lighting" /><br/>
+      <sub><b>ISP, White Balance &amp; Lighting</b></sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="images/screenshot-bottom.png" width="240" alt="Viewfinder & Web Remote" /><br/>
+      <sub><b>Viewfinder &amp; Web Remote</b></sub>
+    </td>
+    <td align="center">
+      <img src="images/screenshot-resolutions.png" width="240" alt="Custom Resolution Manager" /><br/>
+      <sub><b>Custom Resolution Manager</b></sub>
+    </td>
+    <td align="center">
+      <img src="images/screenshot-settings.png" width="240" alt="USB & Gadget Settings" /><br/>
+      <sub><b>USB &amp; Gadget Settings</b></sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" colspan="3">
+      <img src="images/screenshot-troubleshooting.png" width="240" alt="Kernel & Device Diagnostics" /><br/>
+      <sub><b>Kernel &amp; Device Diagnostics</b></sub>
+    </td>
+  </tr>
+</table>
+
+---
+
 ## 📱 Tested Hardware & Device Compatibility
 
 ### ✅ Verified & Tested On
