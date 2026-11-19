@@ -4,12 +4,16 @@
 [![Package](https://img.shields.io/badge/Package-com.andrewchqng.usbwebcam-purple.svg)](https://github.com/AndrewChqng/android-usb-webcam)
 [![Kernel](https://img.shields.io/badge/Kernel-CONFIG__USB__CONFIGFS__F__UVC-blue.svg)](https://kernel.org)
 [![License](https://img.shields.io/badge/License-GPLv3-yellow.svg)](LICENSE)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/AndrewChqng/android-usb-webcam/pulls)
 
 A root-enabled Android application (`com.andrewchqng.usbwebcam`) that exposes your phone's physical cameras (via Camera2 API) as a hardware-level **USB Video Class (UVC 1.1)** webcam (`/dev/videoX`) directly over Linux ConfigFS.
 
 Because it presents itself as a true standard USB webcam, it requires **zero drivers or companion software** on the host computer. It works out-of-the-box with **Linux, Windows, macOS, ChromeOS**, and applications like **OBS Studio, Zoom, Google Meet, Microsoft Teams, Discord, ffplay, and WebRTC browsers**.
 
 Forked and repurposed from the ConfigFS and `libsu` foundation of [`Arian04/android-hid-client`](https://github.com/Arian04/android-hid-client).
+
+> [!IMPORTANT]
+> **Contributions & Testing Welcome!** This project has currently only been hardware-verified on a single device (`OnePlus 12` into a Linux host). Community testing across other Android phones, kernels, root managers (Magisk / KernelSU / APatch), and host OSes (Windows, macOS, Linux, ChromeOS) — plus bug reports, compatibility reports, and pull requests — is strongly encouraged and greatly appreciated!
 
 ---
 
@@ -81,6 +85,8 @@ Any rooted Android 8.0+ (API 26+) device whose kernel has **`CONFIG_USB_CONFIGFS
 | **Older Devices (Android 8.0 – 12, Kernel 4.9 / 4.14 / 4.19 / 5.4)** | OnePlus 6 / 7 / 8 / 9, Pixel 3 / 4 / 5, Xiaomi Mi 9 / 10 / 11, Samsung S9 / S10 / S20 / S21 | **Kernel-dependent**: Works if the stock kernel or a custom kernel (e.g., LineageOS, NetHunter, Sultan, Kirisakura) includes `CONFIG_USB_CONFIGFS_F_UVC=y`. Use the in-app **Troubleshooting** screen to check your kernel config in one tap. |
 | **Root Solutions** | **KernelSU** (`ksud`), **Magisk** (`magiskpolicy`), **APatch** (`apd`) | Automatically detects your active root manager to run ConfigFS setup and inject live SELinux policies (`video_device` / `device` `chr_file`). |
 | **Host Operating Systems** | **Linux** (`uvcvideo` / V4L2 / PipeWire)<br>**Windows 10 / 11** (`usbvideo.sys`)<br>**macOS** & **ChromeOS** | **100% Plug-and-Play**: Uses standard UVC 1.1 descriptors with IAD (`0xEF / 0x02 / 0x01`). No host drivers or ADB forwarding required. |
+
+> **Tested on another device or host OS?** Please open a [GitHub Issue](https://github.com/AndrewChqng/android-usb-webcam/issues) or PR with your phone model, SoC, Android/kernel version, root manager, and host OS to help expand the verified compatibility list!
 
 ---
 
@@ -246,13 +252,31 @@ Userspace communication with the `f_uvc` kernel driver uses standard V4L2 event 
 git clone https://github.com/AndrewChqng/android-usb-webcam.git
 cd android-usb-webcam
 
+# Run JVM unit tests
+./gradlew testDebugUnitTest
+
 # Build Debug & Release APKs
 ./gradlew assembleDebug assembleRelease
 
 # Output APK locations:
 # Debug:   app/build/outputs/apk/debug/app-debug.apk
-# Release: app/build/outputs/apk/release/app-release-unsigned.apk
+# Release: app/build/outputs/apk/release/app-release.apk
 ```
+
+---
+
+## 🤝 Contributing & Testing
+
+**Contributions, pull requests, and community testing are very welcome!** Because Linux ConfigFS `f_uvc`, Camera2 HAL implementations, and OEM USB controllers vary significantly across devices, real-world testing is one of the most valuable ways to help:
+
+- **Hardware & OS Testing**: Test on additional Android devices (Pixel, Samsung, Xiaomi, Nothing, Sony, Motorola, custom ROMs/kernels), root solutions (Magisk, KernelSU, APatch), USB hubs/cables, and host systems (Windows `usbvideo.sys`, macOS, ChromeOS, Linux). Share your findings in [Issues](https://github.com/AndrewChqng/android-usb-webcam/issues) or submit a PR to update the **Verified & Tested On** list.
+- **Bug Reports**: Use the in-app **Troubleshooting → Export debug logs** tool and include your device model, kernel version, root method, and host OS when filing an issue.
+- **Pull Requests**: Bug fixes, device/HAL compatibility improvements, Web Remote / UI enhancements, and new unit tests are all welcome. Before opening a PR:
+  1. Review [agent.md](agent.md) and [learnings.md](learnings.md) for ConfigFS, `libsu`, and V4L2 invariants.
+  2. Run the JVM unit test suite and verify a clean release build:
+     ```bash
+     ./gradlew testDebugUnitTest assembleRelease
+     ```
 
 ---
 
