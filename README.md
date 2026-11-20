@@ -1,4 +1,4 @@
-# Android USB Webcam Client (UVC Gadget)
+# Android USB Webcam — Turn Your Phone Into a Real USB Webcam
 
 [![Android CI](https://img.shields.io/badge/Platform-Android%208.0%2B%20(API%2026%2B)-green.svg)](https://developer.android.com)
 [![Package](https://img.shields.io/badge/Package-com.andrewchqng.usbwebcam-purple.svg)](https://github.com/AndrewChqng/android-usb-webcam)
@@ -6,9 +6,20 @@
 [![License](https://img.shields.io/badge/License-GPLv3-yellow.svg)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/AndrewChqng/android-usb-webcam/pulls)
 
-A root-enabled Android application (`com.andrewchqng.usbwebcam`) that exposes your phone's physical cameras (via Camera2 API) as a hardware-level **USB Video Class (UVC 1.1)** webcam (`/dev/videoX`) directly over Linux ConfigFS.
+**[Download the latest APK](https://github.com/AndrewChqng/android-usb-webcam/releases/latest)** ·
+**[View compatibility reports](https://github.com/AndrewChqng/android-usb-webcam/issues)** ·
+**[Read the quick start](#-quick-start)**
 
-Because it presents itself as a true standard USB webcam, it requires **zero drivers or companion software** on the host computer. It works out-of-the-box with **Linux, Windows, macOS, ChromeOS**, and applications like **OBS Studio, Zoom, Google Meet, Microsoft Teams, Discord, ffplay, and WebRTC browsers**.
+> **Use a rooted Android phone as a plug-and-play webcam for OBS, Zoom, Meet, Teams, and Discord.**
+>
+> Connect it by USB, select it as a normal camera, and start streaming — **no host drivers, companion app, or ADB forwarding required**.
+
+**You need:** a rooted Android 8+ phone, Camera permission, and a kernel with USB ConfigFS/UVC support.<br>
+**Works with:** Linux, Windows, macOS, ChromeOS, OBS Studio, Zoom, Google Meet, Microsoft Teams, Discord, ffplay, and WebRTC browsers.
+
+![Android phone streaming as a USB webcam to a host computer](images/screenshot-host-demo.png)
+
+The app exposes your phone's physical cameras through Camera2 as a hardware-level **USB Video Class (UVC 1.1)** webcam (`/dev/videoX`) using Linux ConfigFS.
 
 Forked and repurposed from the ConfigFS and `libsu` foundation of [`Arian04/android-hid-client`](https://github.com/Arian04/android-hid-client).
 
